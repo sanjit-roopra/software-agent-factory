@@ -18,7 +18,8 @@ prompt.
 from __future__ import annotations
 
 from .doctor import CheckStatus, DoctorReport
-from .observability import MonitoringSnapshot, OperationalHealthReport
+from .observability import MonitoringSnapshot
+from .operational_health import OperationalHealthReport
 from .service_install import ServiceStatus
 
 __all__ = [

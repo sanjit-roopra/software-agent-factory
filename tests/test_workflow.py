@@ -86,11 +86,11 @@ from software_agent_factory.models import (
     WorkItem,
     utc_now,
 )
-from software_agent_factory.observability import _compute_aggregate_metrics
 from software_agent_factory.prompts import build_prompt
 from software_agent_factory.resume_writes import ingest_dashboard_request
 from software_agent_factory.revert_check import REVERT_CHECK_COMMAND, TESTS_PASS_WITHOUT_CHANGE
 from software_agent_factory.run_context import RunContext
+from software_agent_factory.run_metrics import _compute_aggregate_metrics
 from software_agent_factory.store import ARTIFACT_FILENAMES, FileRunStore
 from software_agent_factory.suppression_scan import SUPPRESSION_SCAN_COMMAND
 from software_agent_factory.verification import DeterministicVerifier

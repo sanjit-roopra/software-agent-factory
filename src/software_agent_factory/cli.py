@@ -310,7 +310,7 @@ def _configure_logging(config: FactoryConfig) -> None:
     stop the factory (or the dashboard) from running.
     """
     try:
-        from .observability import configure_factory_logging
+        from .factory_logging import configure_factory_logging
 
         configure_factory_logging(config.data_dir)
     except OSError as exc:
@@ -1123,9 +1123,9 @@ def status_command(
     from .cli_output import render_status_report
     from .observability import (
         build_monitoring_snapshot,
-        build_operational_health,
         scan_readable_runs,
     )
+    from .operational_health import build_operational_health
     from .store import FileRunStore
 
     store = FileRunStore(factory_config.data_dir)
@@ -1503,13 +1503,13 @@ def dashboard_command(
         RunScanCache,
         build_active_invocation_summary,
         build_monitoring_snapshot,
-        build_operational_health,
         build_run_detail,
         build_run_diff,
         build_run_evidence,
-        resolve_usage,
     )
+    from .operational_health import build_operational_health
     from .projects import FileProjectStore
+    from .run_metrics import resolve_usage
     from .store import FileRunStore
 
     store = FileRunStore(factory_config.data_dir)

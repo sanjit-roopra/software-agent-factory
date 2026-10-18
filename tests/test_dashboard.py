@@ -2146,7 +2146,7 @@ def test_dashboard_health_sanitization_omits_workspace_paths() -> None:
     """Review Finding 5: Dashboard health JSON responses must omit absolute workspace paths."""
     from software_agent_factory.dashboard.sanitize import sanitize_health
     from software_agent_factory.models import WorkflowState, utc_now
-    from software_agent_factory.observability import OperationalHealthReport, StaleRunFinding
+    from software_agent_factory.operational_health import OperationalHealthReport, StaleRunFinding
 
     report = OperationalHealthReport(
         generated_at=utc_now(),
@@ -2183,7 +2183,7 @@ def test_dashboard_health_sanitization_omits_workspace_paths() -> None:
 def test_dashboard_api_summary_sanitizes_health_response(tmp_path: Path) -> None:
     """Review Finding 5: /api/summary strips absolute workspace paths from operational health."""
     from software_agent_factory.models import WorkflowState, utc_now
-    from software_agent_factory.observability import OperationalHealthReport, StaleRunFinding
+    from software_agent_factory.operational_health import OperationalHealthReport, StaleRunFinding
 
     def health_with_secret_path() -> Any:
         return OperationalHealthReport(
@@ -2592,8 +2592,8 @@ def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> No
     from software_agent_factory.observability import (
         RunScanCache,
         build_monitoring_snapshot,
-        build_operational_health,
     )
+    from software_agent_factory.operational_health import build_operational_health
     from software_agent_factory.store import FileRunStore
 
     store = FileRunStore(tmp_path / "data")

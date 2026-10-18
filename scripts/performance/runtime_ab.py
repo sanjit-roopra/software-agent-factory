@@ -129,9 +129,9 @@ from software_agent_factory.models import (
     WorkflowState,
 )
 
-# Runtime-reported usage summing lives in observability; reuse it rather than
+# Runtime-reported usage summing lives in run_metrics; reuse it rather than
 # re-implementing the "unreported stays None" rules.
-from software_agent_factory.observability import UsageSummary, summarize_usage
+from software_agent_factory.run_metrics import UsageSummary, summarize_usage
 from software_agent_factory.store import FileRunStore
 from software_agent_factory.subprocess_utils import GITHUB_CREDENTIAL_ENV_VARS
 

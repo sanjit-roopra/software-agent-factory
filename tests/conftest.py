@@ -212,7 +212,7 @@ def _restore_factory_logging() -> Iterator[None]:
 
     That function deliberately configures the package-wide
     ``software_agent_factory`` logger once and sets ``propagate = False``
-    (``observability.py``), which is right for a real process but would leak
+    (``factory_logging.py``), which is right for a real process but would leak
     across tests: a rotating handler would keep writing into another test's
     deleted ``tmp_path``, and later tests could no longer capture log records
     through ``caplog``. Snapshot/restore keeps each test's logging setup its

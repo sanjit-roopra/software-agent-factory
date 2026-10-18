@@ -55,7 +55,7 @@ restarts; it is not relied on to solve the exit-code problem.
 
 stdout/stderr are pointed at ``/dev/null`` because the factory already writes
 its own bounded, rotating, structured JSON logs under
-``<data_dir>/logs/factory.log`` (``observability.configure_factory_logging``,
+``<data_dir>/logs/factory.log`` (``factory_logging.configure_factory_logging``,
 PLAN.md Phase 15.5); a launchd-captured stdout/stderr file is never rotated
 and would grow without bound.
 """

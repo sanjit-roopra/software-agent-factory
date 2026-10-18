@@ -231,7 +231,7 @@ def benchmark_dashboard_operational_health(
     iterations: int = 5,
     warmup: int = 1,
 ) -> dict[str, Any]:
-    from software_agent_factory.observability import build_operational_health
+    from software_agent_factory.operational_health import build_operational_health
     from software_agent_factory.store import FileRunStore
 
     with tempfile.TemporaryDirectory(prefix="benchmark_dash_health_") as temp_dir:
@@ -254,8 +254,8 @@ def _probe_scan_support(store: Any, store_path: Path, store_runs: int) -> tuple[
         from software_agent_factory.observability import (
             RunScanCache,
             build_monitoring_snapshot,
-            build_operational_health,
         )
+        from software_agent_factory.operational_health import build_operational_health
 
         cache = RunScanCache(store)
         probe_scan = cache.get_scan(store_runs)
@@ -281,10 +281,8 @@ def benchmark_dashboard_shared_scan_cold(
     Falls back to unshared cold scans on baseline commits lacking scan parameter support,
     gracefully handling TypeError at execution time.
     """
-    from software_agent_factory.observability import (
-        build_monitoring_snapshot,
-        build_operational_health,
-    )
+    from software_agent_factory.observability import build_monitoring_snapshot
+    from software_agent_factory.operational_health import build_operational_health
     from software_agent_factory.store import FileRunStore
 
     with tempfile.TemporaryDirectory(prefix="benchmark_dash_cold_") as temp_dir:
@@ -334,10 +332,8 @@ def benchmark_dashboard_shared_cache_warm(
     Falls back gracefully if caching is unsupported on baseline commits, handling TypeError
     at execution time.
     """
-    from software_agent_factory.observability import (
-        build_monitoring_snapshot,
-        build_operational_health,
-    )
+    from software_agent_factory.observability import build_monitoring_snapshot
+    from software_agent_factory.operational_health import build_operational_health
     from software_agent_factory.store import FileRunStore
 
     with tempfile.TemporaryDirectory(prefix="benchmark_dash_warm_") as temp_dir:

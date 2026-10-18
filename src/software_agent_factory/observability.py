@@ -11,7 +11,7 @@ authority): it classifies a run with :mod:`software_agent_factory.lifecycle`,
 which imports only the models, so this read-only path never pulls in
 ``WorkflowController``/agents/publishing/routing/workspace code.
 
-Two public surfaces are provided:
+Public surfaces:
 
 - :func:`build_monitoring_snapshot` -- a pure, read-only function that turns
   a run store into a typed, JSON-serializable :class:`MonitoringSnapshot`:
@@ -24,18 +24,11 @@ Two public surfaces are provided:
 - :func:`build_run_detail` -- the single-run counterpart, returning a
   :class:`RunDetail` (summary fields, completion facts and the attempt
   history) or ``None`` for a run that does not exist or cannot be read.
-- :func:`build_operational_health` -- a pure, read-only function reporting
-  three distinct, actionable operational findings: stale non-terminal runs,
-  stale (holder-less) workspace lock files under ``data_dir/locks``, and
-  orphaned workspace directories under ``data_dir/workspaces`` not
-  referenced by any scanned run. Strictly non-destructive: a lock probe
-  releases immediately and never deletes the lock file, and an orphaned
-  workspace is only named, never removed.
-- :func:`configure_factory_logging` -- a lightweight, stdlib-only structured
-  JSON logging setup with a bounded ``RotatingFileHandler`` under the
-  configured data directory, so operators get durable, size-bounded logs
-  while the LaunchAgent sends stdout/stderr to ``/dev/null`` instead of an
-  unbounded launchd output file (``PLAN.md`` Phase 15.2).
+- Operational health findings live in
+  :mod:`software_agent_factory.operational_health`, structured logging in
+  :mod:`software_agent_factory.factory_logging`, and run classification,
+  usage totals and aggregate metrics in
+  :mod:`software_agent_factory.run_metrics`.
 
 Health is always derived at read time and never persisted as a boolean: a
 run's "stale" or "finished" status is recomputed from its timestamps against
@@ -62,8 +55,6 @@ reconstructed from a price table or converted to USD.
 from __future__ import annotations
 
 import json
-import logging
-import logging.handlers
 import os
 import re
 import socket
@@ -73,7 +64,7 @@ from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Iterable, Literal, Protocol, TypeVar
+from typing import Any, Iterable, Literal, Protocol
 
 from pydantic import Field, ValidationError, model_serializer
 
@@ -89,8 +80,6 @@ from .lifecycle import is_run_finished
 from .models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
-    TOKEN_CLASS_FIELDS,
-    TOTAL_TOKEN_FIELDS,
     UNRESOLVED_DECISIONS_HALT_REASON,
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     ActiveInvocationStatus,
@@ -132,22 +121,21 @@ from .models import (
 )
 from .redaction import redact_secrets
 from .resume import escalation_route, resume_refusal_within
-from .setup_run import SETUP_WORKTREE_NAME
+from .run_metrics import (
+    AggregateMetrics,
+    UsageSummary,
+    _classify_run,
+    _compute_aggregate_metrics,
+    _compute_attempt_tallies,
+    _daily_usage,
+    _failed_since,
+    _tokens_since,
+    resolve_usage,
+    summarize_usage,
+)
 from .store import ARTIFACT_FILENAMES, OPERATOR_ESCALATION_FILENAME
 from .transcripts import read_call_tool_calls
 
-try:
-    import fcntl
-except ImportError:  # pragma: no cover - macOS/Linux only per AGENTS.md
-    fcntl = None  # type: ignore[assignment]
-
-#: Whether this platform supports the ``fcntl.flock`` liveness probe
-#: :func:`build_operational_health` uses to detect a stale (holder-less)
-#: lock file. Windows has no ``fcntl``; on such a platform lock staleness
-#: checks are skipped explicitly (``lock_check_supported=False``) rather
-#: than raising or silently reporting zero stale locks as if they were
-#: checked.
-_FCNTL_AVAILABLE = fcntl is not None
 #: The two review statuses the run view and the run guidance report.
 _ACTION_REQUIRED = "ACTION_REQUIRED"
 _ACCEPTED_WITH_FINDINGS = "ACCEPTED_WITH_FINDINGS"
@@ -162,32 +150,16 @@ __all__ = [
     "PageMeta",
     "RunStateCounts",
     "RunSummary",
-    "FirstPassSuccessMetric",
-    "DurationSummary",
-    "ReworkMetrics",
-    "PerformanceSummary",
-    "AggregateMetrics",
     "MonitoringSnapshot",
     "RunAttemptSummary",
     "RunInvocationSummary",
-    "UsageSummary",
-    "resolve_usage",
-    "summarize_usage",
     "RunDetail",
     "RunGuidance",
-    "StaleRunFinding",
-    "StaleLockFinding",
-    "OrphanedWorkspaceFinding",
-    "OperationalHealthReport",
     "DEFAULT_STALE_AFTER",
     "DEFAULT_PAGE_LIMIT",
     "DEFAULT_MAX_SCANNED_RUNS",
-    "PRUNE_LOCK_PREFIX",
     "build_monitoring_snapshot",
-    "build_operational_health",
     "build_run_detail",
-    "configure_factory_logging",
-    "log_run_event",
 ]
 
 #: Matches ``SchedulerConfig.stall_timeout_seconds``'s own default (15
@@ -204,9 +176,6 @@ DEFAULT_PAGE_LIMIT = 100
 #: snapshot's own ``now`` so a fixed clock gives a fixed answer.
 KEY_FIGURE_WINDOW = timedelta(hours=24)
 
-#: How many days of usage the cost trend covers, one :class:`UsageSummary` a day.
-COST_TREND_DAYS = 7
-
 #: Conservative hard cap on how many ``run.json`` files one call to
 #: :func:`build_monitoring_snapshot` will open and parse, independent of
 #: ``limit``/``offset``. Directory enumeration to *find* candidates is cheap
@@ -215,40 +184,6 @@ COST_TREND_DAYS = 7
 #: unbounded number of historical runs can never turn one dashboard/CLI
 #: request into unbounded work.
 DEFAULT_MAX_SCANNED_RUNS = 1000
-
-LOG_DIRNAME = "logs"
-LOG_FILENAME = "factory.log"
-DEFAULT_LOG_MAX_BYTES = 5_000_000
-DEFAULT_LOG_BACKUP_COUNT = 5
-
-#: Prefix of the durable per-source-repository worktree administration lock
-#: created by ``workspace.GitWorktreeWorkspace._prune_lock``. Duplicated as a
-#: literal (rather than imported) because
-#: this read-only module must not pull in the workspace/orchestration module
-#: tree. See :func:`_find_stale_locks` for why these files are never reported
-#: as stale.
-PRUNE_LOCK_PREFIX = "prune-"
-
-#: Marks a handler this module attached, so :func:`configure_factory_logging`
-#: can be called repeatedly (once per entry point) without stacking
-#: duplicate handlers on the same logger.
-_HANDLER_MARKER = "_software_agent_factory_structured_handler"
-
-
-def _classify_run(run: FactoryRun) -> str:
-    """One of ``"escalated"``, ``"failed"``, ``"succeeded"``, ``"active"``.
-
-    The single three-way branch :class:`RunStateCounts`, aggregate metrics,
-    and stale-run health findings all build on, factored out once so every
-    consumer agrees on exactly the same classification rule.
-    """
-    if run.state is WorkflowState.NEEDS_HUMAN:
-        return "escalated"
-    if run.state is WorkflowState.FAILED:
-        return "failed"
-    if is_run_finished(run):
-        return "succeeded"
-    return "active"
 
 
 # ---------------------------------------------------------------------------
@@ -403,24 +338,6 @@ class RunAttemptSummary(ModelBase):
     started_at: UtcDateTime
     completed_at: UtcDateTime
     failure_reason: str | None = None
-
-
-class UsageSummary(ModelBase):
-    """Safe totals of explicitly reported invocation usage."""
-
-    invocation_count: int = Field(ge=0)
-    reported_invocations: int = Field(ge=0)
-    input_tokens: int | None = Field(default=None, ge=0)
-    output_tokens: int | None = Field(default=None, ge=0)
-    reasoning_tokens: int | None = Field(default=None, ge=0)
-    cache_read_tokens: int | None = Field(default=None, ge=0)
-    cache_write_tokens: int | None = Field(default=None, ge=0)
-    premium_requests: float | None = Field(default=None, ge=0.0)
-    premium_request_cost: float | None = Field(default=None, ge=0.0)
-    total_nano_aiu: int | None = Field(default=None, ge=0)
-    list_price_estimate_usd: float | None = Field(default=None, ge=0.0)
-    """Summed pi list-price estimate (never spend). ``None`` when no
-    invocation reported one."""
 
 
 class RunInvocationSummary(ModelBase):
@@ -601,88 +518,6 @@ class RunDetail(ModelBase):
     #: The route ``factory escalate`` would move the run to, or ``None`` (ADR-055).
     escalation_route: ExecutionRoute | None = None
     operator_escalation: OperatorEscalation | None = None
-
-
-class FirstPassSuccessMetric(ModelBase):
-    """Deterministic first-pass success measurement.
-
-    A succeeded run (``_classify_run(run) == "succeeded"``: ``DONE`` or a
-    finalized ``PR_READY``) counts as a first-pass success when it needed
-    exactly one non-polish ``AttemptBudget.IMPLEMENTATION`` attempt to reach
-    ``PR_READY`` -- i.e. the initial implementer attempt was never repaired
-    for an implementer failure, a deterministic verification failure, an
-    independent-reviewer rejection, or a bounded scope-drift replan. Every
-    one of those repair paths in ``WorkflowController._drive_to_pr_ready``
-    re-invokes the implementer under the same ``IMPLEMENTATION`` budget
-    (``workflow.py``). The optional, planned ``POLISH`` attempt is excluded
-    because it is not a recovery from first-pass failure.
-
-    ``denominator`` is every succeeded run in the scanned set; ``rate`` is
-    ``None`` (never ``0.0``) when the denominator is zero, since an
-    undefined rate must never be reported as "0% first-pass success".
-    """
-
-    numerator: int = Field(ge=0)
-    denominator: int = Field(ge=0)
-    rate: float | None = Field(default=None, ge=0.0, le=1.0)
-
-
-class DurationSummary(ModelBase):
-    """Summary of a duration distribution, in seconds. Every ``*_seconds``
-    field is ``None`` (never ``0.0``) when ``count == 0``: an empty
-    distribution has no minimum/maximum/average, and reporting zero would
-    misrepresent "no data" as "instantaneous"."""
-
-    count: int = Field(ge=0)
-    min_seconds: float | None = Field(default=None, ge=0.0)
-    max_seconds: float | None = Field(default=None, ge=0.0)
-    average_seconds: float | None = Field(default=None, ge=0.0)
-
-
-class ReworkMetrics(ModelBase):
-    """Aggregate gate failure and rework metrics across scanned runs."""
-
-    total_gate_failures: int = Field(default=0, ge=0)
-    verification_gate_failures: int = Field(default=0, ge=0)
-    review_gate_failures: int = Field(default=0, ge=0)
-    total_rework_attempts: int = Field(default=0, ge=0)
-    runs_with_rework: int = Field(default=0, ge=0)
-    rework_rate: float | None = Field(default=None, ge=0.0, le=1.0)
-
-
-class PerformanceSummary(ModelBase):
-    """Aggregate performance telemetry across scanned runs."""
-
-    stage_durations: dict[str, DurationSummary] = Field(default_factory=dict)
-    operation_durations: dict[str, DurationSummary] = Field(default_factory=dict)
-    counters: dict[str, int] = Field(default_factory=dict)
-    total_prompt_chars: int = Field(default=0, ge=0)
-    total_response_chars: int = Field(default=0, ge=0)
-    rework: ReworkMetrics = Field(default_factory=ReworkMetrics)
-
-
-class AggregateMetrics(ModelBase):
-    """Store-wide (scanned-subset) aggregate metrics: pure functions of
-    persisted ``FactoryRun``/``AttemptRecord``/``InvocationRecord`` data.
-    Usage totals include only explicitly reported values; missing telemetry
-    remains unknown and is never reconstructed from a price table (ADR-017).
-
-    ``completed_run_durations`` covers every *finished* run in the scanned
-    set (``DONE``, ``NEEDS_HUMAN``, ``FAILED``, or a finalized ``PR_READY``
-    -- i.e. every run for which ``completed_at`` is stamped), measuring
-    ``completed_at - created_at``; it is not restricted to successes, since
-    overall cycle time is useful regardless of outcome.
-    """
-
-    total_attempts: int = Field(ge=0)
-    average_attempts_per_run: float | None = Field(default=None, ge=0.0)
-    implementation_attempts: int = Field(ge=0)
-    ci_repair_attempts: int = Field(ge=0)
-    scope_replans: int = Field(ge=0)
-    first_pass_success: FirstPassSuccessMetric
-    completed_run_durations: DurationSummary
-    usage: UsageSummary
-    performance: PerformanceSummary = Field(default_factory=PerformanceSummary)
 
 
 class MonitoringSnapshot(VersionedModel):
@@ -1159,313 +994,6 @@ def _compute_state_counts(
         failed=failed,
         active=active,
         stale_active=stale_active,
-    )
-
-
-def _failed_since(runs: list[FactoryRun], cutoff: datetime) -> int:
-    """Failed runs that completed strictly after ``cutoff``."""
-    return sum(
-        1
-        for run in runs
-        if _classify_run(run) == "failed"
-        and run.completed_at is not None
-        and run.completed_at > cutoff
-    )
-
-
-def _reported_tokens(usage: UsageMetrics | None) -> int | None:
-    """One invocation's tokens across ``TOTAL_TOKEN_FIELDS``, or ``None`` if it reported none.
-
-    A class the call did not report adds nothing, but a call that reported no class at all is
-    unknown, not zero (ADR-017).
-    """
-    if usage is None:
-        return None
-    resolved = resolve_usage(usage)
-    values = [
-        value for field in TOTAL_TOKEN_FIELDS if (value := getattr(resolved, field)) is not None
-    ]
-    return sum(values) if values else None
-
-
-def _tokens_since(runs: list[FactoryRun], cutoff: datetime) -> int | None:
-    """Reported tokens of every invocation that completed strictly after ``cutoff``.
-
-    ``0`` when no invocation completed after ``cutoff``. ``None`` when some did and none of
-    them reported a counted token class.
-    """
-    recent = [
-        invocation
-        for run in runs
-        for invocation in run.invocation_records
-        if invocation.completed_at > cutoff
-    ]
-    if not recent:
-        return 0
-    reported = [
-        tokens
-        for invocation in recent
-        if (tokens := _reported_tokens(invocation.usage)) is not None
-    ]
-    return sum(reported) if reported else None
-
-
-def _daily_usage(runs: list[FactoryRun], reference_time: datetime) -> list[UsageSummary]:
-    """The usage of the calls that completed in each of the last ``COST_TREND_DAYS`` days.
-
-    Day ``COST_TREND_DAYS - 1`` is the 24 hours before ``reference_time``; a call that
-    completed earlier, or after ``reference_time``, is left out.
-    """
-    days: list[list[InvocationRecord]] = [[] for _ in range(COST_TREND_DAYS)]
-    for run in runs:
-        for invocation in run.invocation_records:
-            days_ago = (reference_time - invocation.completed_at) // timedelta(days=1)
-            if 0 <= days_ago < COST_TREND_DAYS:
-                days[COST_TREND_DAYS - 1 - days_ago].append(invocation)
-    return [summarize_usage(day) for day in days]
-
-
-def _compute_attempt_tallies(
-    runs: list[FactoryRun],
-) -> tuple[dict[str, int], dict[str, int]]:
-    by_role: dict[str, int] = {}
-    by_model: dict[str, int] = {}
-    for run in runs:
-        for attempt in run.attempt_records:
-            by_role[attempt.role.value] = by_role.get(attempt.role.value, 0) + 1
-            by_model[attempt.model] = by_model.get(attempt.model, 0) + 1
-    return by_role, by_model
-
-
-def _duration_summary(durations_seconds: list[float]) -> DurationSummary:
-    if not durations_seconds:
-        return DurationSummary(count=0, min_seconds=None, max_seconds=None, average_seconds=None)
-    return DurationSummary(
-        count=len(durations_seconds),
-        min_seconds=min(durations_seconds),
-        max_seconds=max(durations_seconds),
-        average_seconds=sum(durations_seconds) / len(durations_seconds),
-    )
-
-
-def _compute_aggregate_metrics(runs: list[FactoryRun]) -> AggregateMetrics:
-    """See :class:`AggregateMetrics` for the exact, deterministic definition
-    of each field. Pure function of ``runs`` (the scanned readable subset);
-    no wall-clock/timezone dependence beyond the persisted timestamps
-    themselves."""
-    total_attempts = 0
-    implementation_attempts = 0
-    ci_repair_attempts = 0
-    scope_replans = 0
-    succeeded_total = 0
-    first_pass_numerator = 0
-    durations: list[float] = []
-
-    stage_duration_samples: dict[str, list[float]] = {}
-    operation_duration_samples: dict[str, list[float]] = {}
-    aggregated_counters: dict[str, int] = {}
-    total_prompt_chars = 0
-    total_response_chars = 0
-    total_gate_failures = 0
-    verification_gate_failures = 0
-    review_gate_failures = 0
-    total_rework_attempts = 0
-    runs_with_rework = 0
-
-    for run in runs:
-        run_implementation_attempts = 0
-        run_ci_repair_attempts = 0
-        legacy_scope_replans = 0
-        for attempt in run.attempt_records:
-            total_attempts += 1
-            if attempt.budget is AttemptBudget.IMPLEMENTATION:
-                implementation_attempts += 1
-                if attempt.triggered_by is not AttemptTrigger.POLISH:
-                    run_implementation_attempts += 1
-            elif attempt.budget is AttemptBudget.CI_REPAIR:
-                ci_repair_attempts += 1
-                run_ci_repair_attempts += 1
-            if attempt.triggered_by is AttemptTrigger.SCOPE:
-                legacy_scope_replans += 1
-        scope_replans += max(run.scope_replans, legacy_scope_replans)
-
-        if run.completed_at is not None and is_run_finished(run):
-            durations.append(max((run.completed_at - run.created_at).total_seconds(), 0.0))
-
-        if _classify_run(run) == "succeeded":
-            succeeded_total += 1
-            if run_implementation_attempts == 1:
-                first_pass_numerator += 1
-
-        for k, v in run.performance.durations_ms.items():
-            if k.startswith("stage."):
-                stage_name = k.removeprefix("stage.")
-                stage_duration_samples.setdefault(stage_name, []).append(v / 1000.0)
-            elif k.startswith("operation."):
-                op_name = k.removeprefix("operation.")
-                operation_duration_samples.setdefault(op_name, []).append(v / 1000.0)
-
-        for k, v in run.performance.counters.items():
-            aggregated_counters[k] = aggregated_counters.get(k, 0) + v
-
-        total_prompt_chars += run.performance.prompt_chars or 0
-        total_response_chars += run.performance.response_chars or 0
-
-        gate_failures = run.performance.counters.get("gate_failures_total", 0)
-        total_gate_failures += gate_failures
-        verification_gate_failures += run.performance.counters.get(
-            "gate_failure.verification", 0
-        ) + run.performance.counters.get("gate_failure.VERIFYING", 0)
-        review_gate_failures += run.performance.counters.get(
-            "gate_failure.review", 0
-        ) + run.performance.counters.get("gate_failure.REVIEWING", 0)
-        fallback_rework = (
-            max(0, run_implementation_attempts - 1)
-            + run_ci_repair_attempts
-            + max(run.scope_replans, legacy_scope_replans)
-        )
-        run_rework = run.performance.counters.get("rework_total", 0) or fallback_rework
-        total_rework_attempts += run_rework
-        if run_rework > 0:
-            runs_with_rework += 1
-
-    average_attempts_per_run = (total_attempts / len(runs)) if runs else None
-    first_pass_success = FirstPassSuccessMetric(
-        numerator=first_pass_numerator,
-        denominator=succeeded_total,
-        rate=(first_pass_numerator / succeeded_total) if succeeded_total > 0 else None,
-    )
-    completed_run_durations = _duration_summary(durations)
-    stage_durations = {
-        stage: _duration_summary(samples)
-        for stage, samples in sorted(stage_duration_samples.items())
-    }
-    operation_durations = {
-        op: _duration_summary(samples) for op, samples in sorted(operation_duration_samples.items())
-    }
-    rework = ReworkMetrics(
-        total_gate_failures=total_gate_failures,
-        verification_gate_failures=verification_gate_failures,
-        review_gate_failures=review_gate_failures,
-        total_rework_attempts=total_rework_attempts,
-        runs_with_rework=runs_with_rework,
-        rework_rate=(runs_with_rework / len(runs)) if runs else None,
-    )
-    performance = PerformanceSummary(
-        stage_durations=stage_durations,
-        operation_durations=operation_durations,
-        counters=aggregated_counters,
-        total_prompt_chars=total_prompt_chars,
-        total_response_chars=total_response_chars,
-        rework=rework,
-    )
-
-    return AggregateMetrics(
-        total_attempts=total_attempts,
-        average_attempts_per_run=average_attempts_per_run,
-        implementation_attempts=implementation_attempts,
-        ci_repair_attempts=ci_repair_attempts,
-        scope_replans=scope_replans,
-        first_pass_success=first_pass_success,
-        completed_run_durations=completed_run_durations,
-        usage=summarize_usage(invocation for run in runs for invocation in run.invocation_records),
-        performance=performance,
-    )
-
-
-_UsageNumber = TypeVar("_UsageNumber", int, float)
-
-
-def _reported_or_model_sum(
-    reported: _UsageNumber | None, model_values: Sequence[_UsageNumber]
-) -> _UsageNumber | None:
-    """Return ``reported`` when the aggregate itself reported the field, else
-    the sum of ``model_values`` when any per-model entry reported it, else
-    ``None``.
-
-    Shared by every :class:`~software_agent_factory.models.UsageMetrics`
-    field that also has a
-    :class:`~software_agent_factory.models.ModelUsage` per-model
-    counterpart -- callers still build ``model_values`` themselves (it must
-    already exclude entries the model did not report) so this only factors
-    out the "aggregate, else per-model sum, else unknown" decision.
-    """
-    if reported is not None:
-        return reported
-    if model_values:
-        return sum(model_values)
-    return None
-
-
-# UsageMetrics fields that also have a per-model ModelUsage counterpart of the
-# same name, so a runtime may report them only per model.
-_MODEL_BACKED_USAGE_FIELDS = (
-    *TOKEN_CLASS_FIELDS,
-    "total_nano_aiu",
-    "list_price_estimate_usd",
-)
-
-
-def _sum_or_none(values: Sequence[Any]) -> Any:
-    return sum(values) if values else None
-
-
-def _usage_field_value(usage: UsageMetrics, field: str) -> Any:
-    """One invocation's value for ``field``: the aggregate, else the per-model sum."""
-    model_values = [
-        value for item in usage.model_usage if (value := getattr(item, field)) is not None
-    ]
-    return _reported_or_model_sum(getattr(usage, field), model_values)
-
-
-def _premium_request_costs(usage: UsageMetrics) -> list[float]:
-    """The aggregate cost when reported, else each per-model cost that was reported."""
-    if usage.total_premium_request_cost is not None:
-        return [usage.total_premium_request_cost]
-    return [
-        item.premium_request_cost
-        for item in usage.model_usage
-        if item.premium_request_cost is not None
-    ]
-
-
-def resolve_usage(usage: UsageMetrics) -> UsageMetrics:
-    """One invocation's usage with every aggregate field resolved.
-
-    A runtime may report a figure only per model. Each token, nano-AIU, list-price
-    and premium-request-cost field then takes the aggregate when reported, else the
-    per-model sum, else stays ``None``. The run totals, the call timeline and the
-    dashboard all read this one definition.
-    """
-    resolved: dict[str, Any] = {
-        field: _usage_field_value(usage, field) for field in _MODEL_BACKED_USAGE_FIELDS
-    }
-    resolved["total_premium_request_cost"] = _sum_or_none(_premium_request_costs(usage))
-    return usage.model_copy(update=resolved)
-
-
-def summarize_usage(invocations: Iterable[InvocationRecord]) -> UsageSummary:
-    """Sum runtime-reported usage; a field no invocation reported stays ``None``."""
-    records = list(invocations)
-    usages = [resolve_usage(record.usage) for record in records if record.usage is not None]
-    totals = {
-        field: _sum_or_none([v for usage in usages if (v := getattr(usage, field)) is not None])
-        for field in _MODEL_BACKED_USAGE_FIELDS
-    }
-    premium_requests = [
-        usage.premium_requests for usage in usages if usage.premium_requests is not None
-    ]
-    premium_request_costs = [
-        usage.total_premium_request_cost
-        for usage in usages
-        if usage.total_premium_request_cost is not None
-    ]
-    return UsageSummary(
-        invocation_count=len(records),
-        reported_invocations=len(usages),
-        premium_requests=_sum_or_none(premium_requests),
-        premium_request_cost=_sum_or_none(premium_request_costs),
-        **totals,
     )
 
 
@@ -2080,376 +1608,3 @@ def _active_invocation_status(
     if _is_stale(run, now, stale_after):
         return "stale"
     return "running"
-
-
-# ---------------------------------------------------------------------------
-# Operational health: stale runs, stale locks, orphaned workspaces
-# ---------------------------------------------------------------------------
-
-
-class StaleRunFinding(ModelBase):
-    """One non-terminal run whose most recent heartbeat/activity/update
-    timestamp is older than ``stale_after`` -- the same staleness rule
-    ``RunSummary.is_stale``/``RunStateCounts.stale_active`` use, surfaced
-    here as an individually actionable health finding rather than folded
-    into an aggregate count."""
-
-    run_id: str
-    work_item_id: str
-    state: WorkflowState
-    idle_seconds: float = Field(ge=0.0)
-    workspace_path: str | None = None
-
-
-class StaleLockFinding(ModelBase):
-    """One workspace lock file under ``data_dir/locks`` that exists but has
-    no live holder: a non-blocking ``flock`` probe against it succeeded, was
-    released immediately, and the file itself was left untouched on disk --
-    this module never deletes a lock file. ``lock_name`` is just the file
-    name (e.g. ``<workspace-key>.lock``); no repository content or path
-    outside ``data_dir`` is exposed. The durable ``prune-*.lock`` worktree
-    administration mutex is excluded by design (see
-    :func:`_find_stale_locks`)."""
-
-    lock_name: str
-    modified_at: UtcDateTime | None = None
-
-
-class OrphanedWorkspaceFinding(ModelBase):
-    """One directory under ``data_dir/workspaces`` not referenced by any
-    scanned run's ``FactoryRun.workspace_path``. May include false
-    positives for a workspace whose owning run could not be scanned this
-    call (see ``OperationalHealthReport.degraded_reasons``); it is only
-    named here, never removed or otherwise acted upon."""
-
-    workspace_name: str
-    modified_at: UtcDateTime | None = None
-
-
-class OperationalHealthReport(VersionedModel):
-    """Typed, read-only operational health findings.
-
-    Derived at read time from the same bounded run scan
-    :func:`build_monitoring_snapshot` uses (see ``scanned_runs``/
-    ``scan_truncated``/``degraded`` -- identical meaning here), plus a
-    cheap, strictly non-destructive inspection of ``data_dir/locks`` and
-    ``data_dir/workspaces``. Nothing here mutates, repairs, or deletes
-    anything: a stale lock probe releases its own non-blocking flock
-    immediately and never unlinks the file; an orphaned workspace is only
-    named, never removed.
-
-    ``lock_check_supported`` is ``False`` on a platform with no ``fcntl``
-    (e.g. Windows); in that case ``stale_locks`` is always empty and
-    ``degraded_reasons`` says so explicitly rather than implying zero stale
-    locks were found.
-    """
-
-    generated_at: UtcDateTime
-    stale_after_seconds: float = Field(gt=0.0)
-    max_scanned_runs: int = Field(ge=1)
-    total_runs: int = Field(ge=0)
-    scanned_runs: int = Field(ge=0)
-    scan_truncated: bool
-    unreadable_runs: int = Field(ge=0)
-    degraded: bool
-    degraded_reasons: list[str] = Field(default_factory=list)
-    lock_check_supported: bool
-    locks_checked: int = Field(ge=0)
-    workspaces_checked: int = Field(ge=0)
-    stale_runs: list[StaleRunFinding] = Field(default_factory=list)
-    stale_locks: list[StaleLockFinding] = Field(default_factory=list)
-    orphaned_workspaces: list[OrphanedWorkspaceFinding] = Field(default_factory=list)
-
-
-def build_operational_health(
-    store: RunStoreProtocol,
-    *,
-    data_dir: str | Path | None = None,
-    now: datetime | None = None,
-    stale_after: timedelta = DEFAULT_STALE_AFTER,
-    max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS,
-    scan: RunScanResult | None = None,
-) -> OperationalHealthReport:
-    """Derive a read-only operational health report.
-
-    Pure and recomputable (aside from lock liveness, which necessarily
-    reflects the instant it is probed): the same store/filesystem contents
-    and the same ``now``/``stale_after``/``max_scanned_runs`` yield the same
-    findings, modulo whether another process happens to be holding a lock
-    at the moment of the call.
-
-    ``data_dir`` defaults to ``store.runs_dir.parent``, matching the
-    conventional layout ``FileRunStore``/``GitWorktreeWorkspace`` both use
-    (``data_dir/runs``, ``data_dir/workspaces``, ``data_dir/locks``); pass it
-    explicitly if a caller's store does not follow that convention.
-
-    Reuses the exact same bounded run scan as :func:`build_monitoring_snapshot`
-    (:func:`scan_readable_runs`, capped at ``max_scanned_runs``) for both
-    stale-run detection and the set of workspace directories considered
-    "referenced", so orphan/staleness findings and the metrics snapshot are
-    always consistent with each other for the same inputs.
-
-    Never writes, deletes, or repairs anything: a stale lock probe uses a
-    non-blocking ``flock`` that is released the instant it succeeds and
-    never unlinks the file, and an orphaned workspace directory is only
-    named in the returned report.
-    """
-    if stale_after <= timedelta(0):
-        raise ValueError("stale_after must be > 0")
-    if max_scanned_runs <= 0:
-        raise ValueError("max_scanned_runs must be > 0")
-
-    reference_time = _normalize_now(now)
-    root = Path(data_dir).expanduser() if data_dir is not None else store.runs_dir.parent
-
-    if scan is None:
-        scan = scan_readable_runs(store, max_scanned_runs)
-
-    stale_runs = [
-        StaleRunFinding(
-            run_id=run.id,
-            work_item_id=run.work_item_id,
-            state=run.state,
-            idle_seconds=max(
-                (reference_time - (_last_signal_at(run) or run.created_at)).total_seconds(),
-                0.0,
-            ),
-            workspace_path=run.workspace_path,
-        )
-        for run in scan.readable_runs
-        if _classify_run(run) == "active" and _is_stale(run, reference_time, stale_after)
-    ]
-
-    referenced_workspace_names = {
-        Path(run.workspace_path).name for run in scan.readable_runs if run.workspace_path
-    }
-
-    stale_locks, locks_checked, lock_issues = _find_stale_locks(root / "locks")
-    orphaned_workspaces, workspaces_checked = _find_orphaned_workspaces(
-        root / "workspaces", referenced_workspace_names
-    )
-
-    degraded_reasons = [
-        *scan.degraded_reasons(max_scanned_runs=max_scanned_runs),
-        *lock_issues,
-    ]
-    if scan.scan_truncated:
-        degraded_reasons.append(
-            "orphaned-workspace findings may include false positives for workspaces "
-            "owned by runs the scan cap excluded"
-        )
-
-    return OperationalHealthReport(
-        generated_at=reference_time,
-        stale_after_seconds=stale_after.total_seconds(),
-        max_scanned_runs=max_scanned_runs,
-        total_runs=scan.total_directories,
-        scanned_runs=scan.scanned_runs,
-        scan_truncated=scan.scan_truncated,
-        unreadable_runs=scan.unreadable_runs,
-        degraded=scan.degraded or bool(lock_issues),
-        degraded_reasons=degraded_reasons,
-        lock_check_supported=_FCNTL_AVAILABLE,
-        locks_checked=locks_checked,
-        workspaces_checked=workspaces_checked,
-        stale_runs=stale_runs,
-        stale_locks=stale_locks,
-        orphaned_workspaces=orphaned_workspaces,
-    )
-
-
-def _find_stale_locks(locks_dir: Path) -> tuple[list[StaleLockFinding], int, list[str]]:
-    """Inspect every workspace ``*.lock`` file directly under ``locks_dir``.
-
-    Returns ``(findings, files_checked, issues)``; ``issues`` are
-    human-readable degraded-reason strings (unsupported platform, malformed
-    owner data, or a per-file probe failure count), never raised.
-
-    ``prune-<digest>.lock`` files are deliberately skipped and not counted:
-    unlike a workspace lock -- which ``GitWorktreeWorkspace.release_lock``
-    unlinks while still held, so a *leftover* file genuinely means an
-    abandoned holder -- the per-source-repository worktree administration
-    lock (``workspace._prune_lock``) is a durable mutex file that is only
-    ever flocked and released, never unlinked. Reporting it would make every
-    healthy factory that has ever run once report a permanent, unactionable
-    stale lock.
-    """
-    if not _FCNTL_AVAILABLE:
-        return [], 0, ["lock staleness checks unsupported on this platform (no fcntl)"]
-    if not locks_dir.is_dir():
-        return [], 0, []
-
-    findings: list[StaleLockFinding] = []
-    checked = 0
-    failed_checks = 0
-    for entry in sorted(locks_dir.iterdir(), key=lambda path: path.name):
-        if not entry.is_file() or not entry.name.endswith(".lock"):
-            continue
-        if entry.name.startswith(PRUNE_LOCK_PREFIX):
-            continue
-        checked += 1
-        try:
-            is_stale, modified_at = _probe_lock_staleness(entry)
-        except (OSError, ValueError):
-            failed_checks += 1
-            continue
-        if is_stale:
-            findings.append(StaleLockFinding(lock_name=entry.name, modified_at=modified_at))
-
-    issues = (
-        [f"{failed_checks} lock file(s) could not be probed for staleness"] if failed_checks else []
-    )
-    return findings, checked, issues
-
-
-def _probe_lock_staleness(lock_path: Path) -> tuple[bool, datetime | None]:
-    """Non-destructively determine whether a lock's recorded owner is dead.
-
-    Workspace locks persist their owning PID after acquiring the real
-    ``flock``. Monitoring must not acquire that same exclusive lock even
-    briefly: the workspace protocol uses ``LOCK_NB``, so an observer holding
-    it could make a legitimate run fail with ``WorkspaceLockError``. Instead
-    this read-only probe checks whether the recorded PID still exists.
-
-    PID reuse can conservatively produce a false negative (an abandoned file
-    appears live), but never a false lock conflict. Empty or malformed owner
-    data is reported as a degraded probe rather than guessed to be stale.
-    """
-    try:
-        owner_pid = int(lock_path.read_text(encoding="utf-8").strip())
-    except ValueError as exc:
-        raise ValueError(f"lock file has an invalid owner PID: {lock_path}") from exc
-    if owner_pid <= 0:
-        raise ValueError(f"lock file has an invalid owner PID: {lock_path}")
-
-    is_stale = not process_alive(owner_pid)
-
-    try:
-        modified_at = datetime.fromtimestamp(lock_path.stat().st_mtime, tz=timezone.utc)
-    except OSError:
-        modified_at = None
-    return is_stale, modified_at
-
-
-def _find_orphaned_workspaces(
-    workspaces_dir: Path,
-    referenced_names: set[str],
-) -> tuple[list[OrphanedWorkspaceFinding], int]:
-    """Every directory directly under ``workspaces_dir`` whose name is not
-    in ``referenced_names`` and is not a setup worktree. Returns
-    ``(findings, directories_checked)``.
-    Never descends into a workspace's own contents (no file listing, no
-    diff, no repository content is read)."""
-    if not workspaces_dir.is_dir():
-        return [], 0
-
-    findings: list[OrphanedWorkspaceFinding] = []
-    checked = 0
-    for entry in sorted(workspaces_dir.iterdir(), key=lambda path: path.name):
-        if not entry.is_dir():
-            continue
-        checked += 1
-        # Setup worktrees (ADR-034) belong to no run. They are kept on purpose.
-        if entry.name in referenced_names or SETUP_WORKTREE_NAME.match(entry.name):
-            continue
-        try:
-            modified_at = datetime.fromtimestamp(entry.stat().st_mtime, tz=timezone.utc)
-        except OSError:
-            modified_at = None
-        findings.append(
-            OrphanedWorkspaceFinding(workspace_name=entry.name, modified_at=modified_at)
-        )
-    return findings, checked
-
-
-# ---------------------------------------------------------------------------
-# Structured logging
-# ---------------------------------------------------------------------------
-
-
-class _RedactingJsonFormatter(logging.Formatter):
-    """Renders one JSON object per line: ``timestamp``, ``level``,
-    ``logger``, ``message``, plus ``run_id``/``state`` when supplied via
-    ``extra``.
-
-    The rendered message is passed through the same credential redaction
-    used for captured command output (``redaction.redact_secrets``).
-    Exception tracebacks are intentionally never rendered: this module has
-    no way to know whether a caller logged an exception that happened to
-    wrap repository content, so it stays out of the log line entirely
-    rather than risk leaking it.
-    """
-
-    def format(self, record: logging.LogRecord) -> str:
-        payload: dict[str, object] = {
-            "timestamp": datetime.fromtimestamp(record.created, tz=timezone.utc).isoformat(),
-            "level": record.levelname,
-            "logger": record.name,
-            "message": redact_secrets(record.getMessage()),
-        }
-        run_id = getattr(record, "run_id", None)
-        if run_id is not None:
-            payload["run_id"] = run_id
-        state = getattr(record, "state", None)
-        if state is not None:
-            payload["state"] = str(state)
-        return json.dumps(payload, sort_keys=True)
-
-
-def configure_factory_logging(
-    data_dir: str | Path,
-    *,
-    logger_name: str = "software_agent_factory",
-    level: int = logging.INFO,
-    max_bytes: int = DEFAULT_LOG_MAX_BYTES,
-    backup_count: int = DEFAULT_LOG_BACKUP_COUNT,
-) -> logging.Logger:
-    """Attach a bounded, structured-JSON rotating file handler under
-    ``<data_dir>/logs/factory.log`` and return the configured logger.
-
-    Idempotent: calling this again for the same ``logger_name`` (e.g. from
-    another entry point) reuses the existing handler instead of stacking a
-    duplicate one. Deliberately does not attach a console/stream handler:
-    the LaunchAgent sends stdout/stderr to ``/dev/null`` and relies on this
-    bounded, on-disk structured log instead of an unbounded launchd output
-    file. Log files never leave the configured data directory.
-    """
-    logger = logging.getLogger(logger_name)
-    logger.setLevel(level)
-
-    for handler in logger.handlers:
-        if getattr(handler, _HANDLER_MARKER, False):
-            return logger
-
-    log_dir = Path(data_dir).expanduser() / LOG_DIRNAME
-    log_dir.mkdir(parents=True, exist_ok=True)
-    handler = logging.handlers.RotatingFileHandler(
-        log_dir / LOG_FILENAME,
-        maxBytes=max_bytes,
-        backupCount=backup_count,
-        encoding="utf-8",
-    )
-    handler.setFormatter(_RedactingJsonFormatter())
-    setattr(handler, _HANDLER_MARKER, True)
-    logger.addHandler(handler)
-    logger.propagate = False
-    return logger
-
-
-def log_run_event(
-    logger: logging.Logger,
-    message: str,
-    *,
-    run_id: str | None = None,
-    state: WorkflowState | str | None = None,
-    level: int = logging.INFO,
-) -> None:
-    """Emit one structured log record, optionally tagged with ``run_id``/
-    ``state`` for correlation, without callers having to remember the
-    ``extra=`` mapping shape ``_RedactingJsonFormatter`` expects."""
-    extra: dict[str, object] = {}
-    if run_id is not None:
-        extra["run_id"] = run_id
-    if state is not None:
-        extra["state"] = state
-    logger.log(level, message, extra=extra)

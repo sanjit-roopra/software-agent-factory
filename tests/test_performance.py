@@ -30,11 +30,11 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import (
     MonitoringSnapshot,
-    OperationalHealthReport,
     PageMeta,
     RunStateCounts,
-    _compute_aggregate_metrics,
 )
+from software_agent_factory.operational_health import OperationalHealthReport
+from software_agent_factory.run_metrics import _compute_aggregate_metrics
 from software_agent_factory.telemetry import (
     count_operation,
     measure_operation,
