@@ -306,6 +306,7 @@ def test_a_pi_call_returns_its_events_as_the_transcript_and_names_its_session(
     process = _pi_process(
         {"type": "message_update", "message": {"content": "partial"}},
         {"type": "tool_execution_start", "toolName": "bash", "args": {"command": f"echo {SECRET}"}},
+        {"type": "tool_execution_update", "toolName": "bash", "partialResult": {}},
         {"type": "tool_execution_end", "toolName": "bash"},
     )
     runtime = PiAgentRuntime(
@@ -317,6 +318,8 @@ def test_a_pi_call_returns_its_events_as_the_transcript_and_names_its_session(
     assert result.success is True
     assert result.transcript is not None
     assert "message_update" not in result.transcript
+    assert "tool_execution_update" not in result.transcript
+    assert "tool_execution_end" in result.transcript
     assert result.session_ref is not None
     assert result.session_ref.startswith("pi-sessions/")
     assert result.session_ref.endswith("/implementer.jsonl")

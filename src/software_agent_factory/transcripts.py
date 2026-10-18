@@ -100,8 +100,8 @@ def store_call_transcript(directory: Path, invocation_number: int, text: str | N
         return None
 
 
-# pi repeats the whole partial message in each streaming update; ``message_end`` keeps it once.
-_SKIPPED_EVENTS = frozenset({"message_update"})
+# pi repeats everything so far in each streaming update; the matching ``*_end`` event keeps it once.
+_SKIPPED_EVENTS = frozenset({"message_update", "tool_execution_update"})
 
 
 class EventLog:

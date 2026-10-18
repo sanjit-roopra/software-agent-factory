@@ -488,8 +488,9 @@ to see what a call did.
 - A runtime returns the raw lines its command printed as `AgentResult.transcript`.
   Claude Code and Copilot do this now.
 - pi prints no event stream on stdout. Its runtime keeps each RPC event it reads and
-  returns those lines as the transcript. It leaves out `message_update` events, since
-  each one repeats the whole message so far. `message_end` keeps the final text.
+  returns those lines as the transcript. It leaves out `message_update` and
+  `tool_execution_update` events, since each one repeats all the text so far.
+  `message_end` and `tool_execution_end` keep the final text.
   The tool list reads pi `tool_execution_start` events too. Amended on 2026-10-19.
 - A pi call that runs in a kept session also returns the path of its session file,
   relative to the data directory. The call record keeps it as `session_ref`, so a
