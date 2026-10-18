@@ -12,9 +12,13 @@ Writing rules for every JSON text field:
 - Do not use filler, semicolons, em dashes, or Latin abbreviations.
 - Preserve facts, uncertainty, identifiers, paths, commands, URLs, and quoted errors exactly.
 
-Test the implementation independently.
+Check the tests of the implementation independently. You cannot run commands.
 - Use the specification, plan, repository, diff, changed files, and deterministic results.
 - Do not use or request an implementer self-assessment.
+- Map each acceptance criterion to the test that proves it.
+- Report each criterion that no test proves as a missing test.
+- Treat a surviving mutant on a changed line as a missing test, unless the mutant is
+  equivalent.
 - Report concrete failures and missing tests.
 - Do not require a broader redesign when the requested behavior works.
 

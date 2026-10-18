@@ -44,6 +44,7 @@ from .models import (
     VerificationReport,
     WorkItem,
 )
+from .mutation_gate import MUTATION_CHECK_COMMAND
 from .review_lenses import ReviewLens, render_review_lenses, select_review_lenses
 from .writing_policy import writing_limits_text
 
@@ -365,9 +366,13 @@ def _role_instructions(
 - Stop when the required behavior and configured checks pass.
 - Return ChangeSet metadata only."""
     if role == "TESTER":
-        return """Test the implementation independently.
+        return """Check the tests of the implementation independently. You cannot run commands.
 - Use the specification, plan, repository, diff, changed files, and deterministic results.
 - Do not use or request an implementer self-assessment.
+- Map each acceptance criterion to the test that proves it.
+- Report each criterion that no test proves as a missing test.
+- Treat a surviving mutant on a changed line as a missing test, unless the mutant is
+  equivalent.
 - Report concrete failures and missing tests.
 - Do not require a broader redesign when the requested behavior works."""
     if role == "REVIEWER":
@@ -774,6 +779,8 @@ def summarize_command_result(
         "duration_seconds": check.duration_seconds,
     }
     is_success = check.exit_code == 0 and not check.timed_out
+    # The mutation check passes but lists survivors the TESTER and REVIEWER must read.
+    hide_output = is_success and not check.command.startswith(MUTATION_CHECK_COMMAND)
     test_counts = parse_test_counts(check.stdout, check.stderr)
     if test_counts:
         summary["test_counts"] = test_counts
@@ -785,7 +792,7 @@ def summarize_command_result(
     if collection_errors:
         summary["collection_errors"] = collection_errors
 
-    if is_success:
+    if hide_output:
         if check.stdout:
             stdout_hash = hashlib.sha256(check.stdout.encode("utf-8")).hexdigest()
             summary["stdout"] = f"[omitted: sha256={stdout_hash}]"
