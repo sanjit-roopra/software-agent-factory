@@ -72,6 +72,7 @@ from software_agent_factory.models import (
     ExecutionPlan,
     ExpectedScope,
     PlanStep,
+    RejectedCommand,
     ReviewAcceptance,
     ReviewAcceptanceReason,
     ReviewFinding,
@@ -943,6 +944,58 @@ def test_build_pr_body_handles_missing_optional_artifacts() -> None:
     assert "### Plan" not in body
     assert "### Deterministic verification" not in body
     assert "### Reviewer result" not in body
+    assert "## Checks not run" not in body
+    assert "## Assumptions and open questions" not in body
+
+
+def test_build_pr_body_discloses_checks_not_run_and_open_questions() -> None:
+    plan = ExecutionPlan(
+        summary="Add validation.",
+        steps=[PlanStep(id="s1", goal="Add input validation")],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+        unresolved_decisions=["Should blank names return 422 instead?"],
+    )
+    body = build_pr_body(
+        work_item=_work_item(),
+        specification=Specification(
+            problem="Names should not be empty.",
+            assumptions=["Whitespace counts as empty"],
+            confidence=0.9,
+        ),
+        plan=plan,
+        changed_files=["src/app.py"],
+        verification=VerificationReport(passed=True, confidence=1.0),
+        review=None,
+        rejected_commands=[RejectedCommand(command="npm test", reason="fails on the base commit")],
+        run_id="RUN-honest",
+    )
+
+    assert "## Checks not run\n- `npm test`: fails on the base commit" in body
+    assert (
+        "## Assumptions and open questions\n"
+        "- Assumption: Whitespace counts as empty\n"
+        "- Should blank names return 422 instead?"
+    ) in body
+
+
+def test_build_pr_body_shows_scope_growth_against_the_plan() -> None:
+    plan = ExecutionPlan(
+        summary="Add validation.",
+        steps=[PlanStep(id="s1", goal="Add input validation")],
+        expected_scope=ExpectedScope(modules=["src"], estimated_files_min=1, estimated_files_max=2),
+    )
+    body = build_pr_body(
+        work_item=_work_item(),
+        specification=None,
+        plan=plan,
+        changed_files=["src/app.py", "docs/app.md", "README.md"],
+        verification=None,
+        review=None,
+        run_id="RUN-growth",
+    )
+
+    assert "3 files changed; the plan estimated 1-2." in body
+    assert "## Outside the planned modules\n- `docs/app.md`\n- `README.md`" in body
 
 
 def test_build_pr_body_discloses_controller_accepted_findings() -> None:

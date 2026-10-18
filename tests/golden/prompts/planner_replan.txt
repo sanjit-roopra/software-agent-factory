@@ -49,7 +49,7 @@ Specification:
 {"acceptance_criteria":[],"assumptions":[],"confidence":0.9,"constraints":[],"dependencies":[],"problem":"Names must not be blank.","provenance":"AGENT","risk_flags":[],"schema_version":1,"unknowns":[]}
 
 Replan context:
-{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected 400","summary":"Continuous integration reported a failing check.","trigger":"CI"}
+{"failures":["unit-tests: TEST_FAILURE"],"log_excerpt":"AssertionError: expected 400","previous_attempts":[],"summary":"Continuous integration reported a failing check.","trigger":"CI"}
 
 Changed files so far:
 ["src/app.py"]

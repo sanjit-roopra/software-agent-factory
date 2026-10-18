@@ -18,6 +18,7 @@ Make the required changes in the current working directory.
 - Make the narrowest change that meets the acceptance criteria.
 - Reuse existing mechanisms. Do not do unrelated cleanup.
 - Treat sibling-task constraints as hard scope boundaries.
+- Do not skip tests, or add lint or type suppressions, to make checks pass.
 - Stop when the required behavior and configured checks pass.
 - Return ChangeSet metadata only.
 

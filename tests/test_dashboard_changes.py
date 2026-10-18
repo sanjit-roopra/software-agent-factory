@@ -293,7 +293,7 @@ def test_build_run_evidence_carries_plan_artifacts(tmp_path: Path) -> None:
             ),
         ),
     )
-    store.save_artifact("run-d", ChangeSet(summary="C", changed_files=["a.py"]))
+    store.save_artifact("run-d", ChangeSet(summary="C", changed_files=["src/a.py", "a.py"]))
 
     evidence = build_run_evidence(store, "run-d")
 
@@ -302,7 +302,8 @@ def test_build_run_evidence_carries_plan_artifacts(tmp_path: Path) -> None:
     assert payload["branch_name"] == "factory/run-d"
     assert payload["specification"]["problem"] == "P"
     assert payload["execution_plan"]["steps"][0]["goal"] == "G"
-    assert payload["change_set"]["changed_files"] == ["a.py"]
+    assert payload["change_set"]["changed_files"] == ["src/a.py", "a.py"]
+    assert payload["out_of_scope_paths"] == ["a.py"]
 
 
 # -- routes ------------------------------------------------------------------

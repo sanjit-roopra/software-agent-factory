@@ -336,6 +336,29 @@ def test_observe_reports_a_timeout_with_the_last_known_status(tmp_path: Path) ->
     assert [check.name for check in report.checks] == ["build"]
 
 
+def test_observe_ends_the_wait_when_before_wait_raises(tmp_path: Path) -> None:
+    runner = ScriptedRunner(check_responses=[[check_payload("build", "pending")]])
+    config = build_config(
+        tmp_path,
+        pull_request={"enabled": True},
+        ci={"enabled": True, "poll_interval_seconds": 1, "max_wait_seconds": 60},
+    )
+    slept: list[float] = []
+    observer = CIObserver(config, client=GitHubClient(runner=runner), sleep=slept.append)
+
+    def stop() -> None:
+        raise KeyboardInterrupt
+
+    with pytest.raises(KeyboardInterrupt):
+        observer.observe(
+            repo_path=tmp_path,
+            pull_request_url="https://github.com/acme/repo/pull/1",
+            before_wait=stop,
+        )
+    assert slept == []
+    assert len([argv for argv in runner.commands("gh") if argv[1:3] == ["pr", "checks"]]) == 1
+
+
 def test_normalize_ci_status_is_a_pure_domain_projection() -> None:
     report = normalize_ci_status(CIStatus(overall=CheckStatus.PASS), repair_attempts_used=2)
 
