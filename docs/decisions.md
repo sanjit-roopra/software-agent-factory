@@ -1,5 +1,32 @@
 # Architecture Decisions
 
+## ADR-064: A stuck filter, filter tiles and one cost per step
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The run list marked a stale active run, but the operator was not able to list only those runs.
+The success rate and cost tiles were not links, though the other two tiles were.
+Each step on the run page showed every cost unit in one cell, which made the cell long.
+
+### Decision
+
+- `/api/runs` takes `state=stuck`. It keeps the active runs with no new signal for longer
+  than `stale_after`. These are the runs the `stale_active` count counts.
+  The state list of the run list has a **Stuck** choice, and `#runs?state=stuck` opens it.
+- The **Success rate** tile links to `#runs?state=succeeded`.
+  The **Cost, last 7 days** tile links to `#runs?state=failed`, because the run list has no
+  sort by cost.
+- A step row and the total row show one cost unit, in the run list order: AI usage value,
+  then list-price estimate, then premium requests. The other units are in the tooltip.
+  No unit is added to another (ADR-017).
+
+### Consequences
+
+- The operator can list the stuck runs and act on them.
+- A step cost cell is short. The other units need a hover to see.
+
 ## ADR-063: Show the call time limit next to the call timer
 
 Status: accepted on 2026-10-19.
