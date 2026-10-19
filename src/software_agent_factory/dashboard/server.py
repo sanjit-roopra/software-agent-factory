@@ -10,10 +10,12 @@ starts a server as a side effect of import.
 
 from __future__ import annotations
 
+import threading
 from dataclasses import dataclass
 from http.server import ThreadingHTTPServer
 
 from .actions import ResumeActions
+from .events_route import MAX_STREAMS, RunVersionsProvider
 from .handler import DashboardRequestHandler
 from .security import expected_origin, generate_token, validate_bind_host
 from .snapshot import (
@@ -48,8 +50,8 @@ class DashboardConfig:
     reports ``health: null`` rather than refusing to start.
     ``run_evidence_provider`` turns on the check output, review and plan routes
     ``run_diff_provider`` the diff route, ``run_transcript_provider`` the call transcript
-    route (ADR-047, ADR-050) and ``run_prompt_provider`` the call prompt route (ADR-070);
-    without them they are
+    route (ADR-047, ADR-050), ``run_prompt_provider`` the call prompt route (ADR-070) and
+    ``run_versions_provider`` the change stream ``/api/events`` (ADR-077); without them they are
     ``404``. ``resume_actions`` turns on
     the approve, answer and retry routes; without it every ``POST`` is ``405``.
     ``request_timeout_seconds`` is how long a connection may stay silent: a client that
@@ -66,6 +68,7 @@ class DashboardConfig:
     run_diff_provider: RunDiffProvider | None = None
     run_transcript_provider: RunTranscriptProvider | None = None
     run_prompt_provider: RunTranscriptProvider | None = None
+    run_versions_provider: RunVersionsProvider | None = None
     resume_request_reader: ResumeRequestReader | None = None
     resume_actions: ResumeActions | None = None
     host: str = DEFAULT_HOST
@@ -94,10 +97,18 @@ class DashboardServer(ThreadingHTTPServer):
         self.run_diff_provider: RunDiffProvider | None = config.run_diff_provider
         self.run_transcript_provider: RunTranscriptProvider | None = config.run_transcript_provider
         self.run_prompt_provider: RunTranscriptProvider | None = config.run_prompt_provider
+        self.run_versions_provider: RunVersionsProvider | None = config.run_versions_provider
+        self.event_streams = threading.BoundedSemaphore(MAX_STREAMS)
+        #: Set when the server closes, so every open change stream ends.
+        self.event_stop = threading.Event()
         self.resume_request_reader: ResumeRequestReader | None = config.resume_request_reader
         self.resume_actions: ResumeActions | None = config.resume_actions
         self.request_timeout_seconds: float = config.request_timeout_seconds
         super().__init__((bind_host, config.port), DashboardRequestHandler)
+
+    def server_close(self) -> None:
+        self.event_stop.set()
+        super().server_close()
 
     @property
     def address(self) -> tuple[str, int]:

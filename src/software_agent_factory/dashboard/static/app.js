@@ -233,7 +233,8 @@
     evidence: { plan: null, diff: null, checks: null, review: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
     search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
     projectsListed: false, shownRuns: null, selectFirstRow: false,
-    compareList: { q: "", offset: 0, page: null }, compareLoaded: { list: null, settled: null }
+    compareList: { q: "", offset: 0, page: null }, compareLoaded: { list: null, settled: null },
+    streamOpen: false
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -5231,7 +5232,11 @@
     return key !== null && held.compareLoaded.settled !== key;
   }
 
+  // With the change stream open (ADR-077) a change refreshes the view, so the poll stays slow.
   function pollDelay(view, held) {
+    if (held.streamOpen) {
+      return POLL_IDLE_MS;
+    }
     return viewHasActiveRun(view, held) ? POLL_ACTIVE_MS : POLL_IDLE_MS;
   }
 
@@ -5247,6 +5252,47 @@
       lastPollAt = nowMs;
       pollView();
     }
+  }
+
+  // Whether a change to these runs can alter the open view. A run page cares only about its
+  // own run; null names any run.
+  function changeTouchesView(view, openRunId, runs) {
+    return view !== "run" || !Array.isArray(runs) || runs.includes(openRunId);
+  }
+
+  // A change refreshes the open view at once, or on the next check while a request is out.
+  function onRunsChanged(event) {
+    let runs = null;
+    try {
+      runs = JSON.parse(event.data).runs;
+    } catch {
+      runs = null;
+    }
+    if (!changeTouchesView(state.view, state.runId, runs)) {
+      return;
+    }
+    if (requests[state.view].inFlight === 0) {
+      lastPollAt = Date.now();
+      pollView();
+    } else {
+      lastPollAt = 0;
+    }
+  }
+
+  // The stream from /api/events (ADR-077). The browser reconnects on its own with the last
+  // event id; while it is not open, and when the server refuses it, the page polls as before.
+  function openChangeStream() {
+    if (typeof globalThis.EventSource !== "function") {
+      return;
+    }
+    const source = new globalThis.EventSource("/api/events");
+    source.addEventListener("open", function () {
+      state.streamOpen = true;
+    });
+    source.addEventListener("error", function () {
+      state.streamOpen = false;
+    });
+    source.addEventListener("runs-changed", onRunsChanged);
   }
 
   function applyRoute(moveFocus) {
@@ -5841,6 +5887,7 @@
     globalThis.setTimeout(pollTick, POLL_ACTIVE_MS);
     globalThis.setInterval(tickTimers, TICK_INTERVAL_MS);
     document.addEventListener("visibilitychange", pollView);
+    openChangeStream();
   }
 
   start();

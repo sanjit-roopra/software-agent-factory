@@ -5,8 +5,7 @@ headers all live here. ``GET`` serves reads. The only ``POST`` routes are the ap
 answer, retry, stop, steer and escalate actions (ADR-033, ADR-042, ADR-047, ADR-055): they check
 the transport here and the run in :mod:`.actions`. Nothing in this module -- or anywhere in this
 package -- imports ``workflow``, ``service``, ``publishing``, GitHub mutation helpers,
-``subprocess`` or any shell helper. All data comes from the injectable
-providers in :mod:`software_agent_factory.dashboard.snapshot`.
+``subprocess`` or any shell helper. All data comes from the providers in :mod:`.snapshot`.
 """
 
 from __future__ import annotations
@@ -26,6 +25,7 @@ from ..models import RunListFilter
 from ..resume_classes import RESUME_CLASSES
 from . import assets
 from .actions import ResumeActions, accept_action, accept_escalate, accept_steer, accept_stop
+from .events_route import EVENTS_PATH, serve_events
 from .evidence import (
     sanitize_run_checks,
     sanitize_run_diff,
@@ -71,11 +71,8 @@ def _log_failure_type(message: str, exc: BaseException, *args: object) -> None:
 #: and the result. It never holds the token or the body.
 _audit_logger = logging.getLogger("software_agent_factory.dashboard.audit")
 
-#: Hard ceiling on the number of query-string fields ``parse_qs`` will accept. The dashboard
-#: only ever reads ``token``, ``limit``, ``offset``, the run list filters ``q``, ``state``,
-#: ``project`` and ``sort``, and the compare ids ``a`` and ``b``, so anything beyond a handful
-#: of fields is a mistake or an attempt to force excessive parsing work; either way it is
-#: rejected with a clean 400 rather than left to raise an uncaught ``ValueError``.
+#: Most query fields ``parse_qs`` accepts. The dashboard reads only a handful (token, paging,
+#: run list filters, compare ids); more is a mistake or an attack and gets a clean 400.
 _MAX_QUERY_FIELDS = 16
 
 
@@ -463,6 +460,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         diff_match = _RUN_DIFF_PATTERN.match(path)
         if diff_match:
             self._serve_run_diff(diff_match.group(1), query, send_body)
+            return
+        if path == EVENTS_PATH:
+            serve_events(self, self.server, (*_SECURITY_HEADERS, _NO_STORE), send_body)
             return
         status, payload = transcript_answer(self.server, path)
         self._respond_json(status, payload, send_body)
