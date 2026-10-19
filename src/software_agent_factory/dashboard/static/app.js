@@ -637,9 +637,13 @@
       setNotify(false);
       return;
     }
-    globalThis.Notification.requestPermission().then(function (permission) {
-      setNotify(permission === "granted");
-    });
+    globalThis.Notification.requestPermission()
+      .then(function (permission) {
+        setNotify(permission === "granted");
+      })
+      .catch(function () {
+        setNotify(false);
+      });
   }
 
   function showNotification(alert, text) {
