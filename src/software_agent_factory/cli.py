@@ -1394,14 +1394,12 @@ def dashboard_command(
 ) -> None:
     """Serve the local dashboard until interrupted (ADR-016, ADR-033).
 
-    Blocks in the foreground and is the *only* thing that ever starts a
-    dashboard: nothing in ``factory run`` or ``factory start`` opens a
-    socket. The server binds ``127.0.0.1`` and nothing else. It answers ``GET``
-    and ten ``POST`` routes that queue an approval, plan answers, a publish retry, an attempt
-    grant, a findings acceptance, a scope approval, a CI retry, a stop or a note, or escalate. It is
-    protected by a token generated
-    for this process; the tokenized URL is printed to stdout once and never
-    written to the log.
+    Blocks in the foreground and is the *only* thing that ever starts a dashboard: nothing in
+    ``factory run`` or ``factory start`` opens a socket. The server binds ``127.0.0.1`` and
+    nothing else. It answers ``GET`` and ten ``POST`` routes that queue an approval, plan
+    answers, a publish retry, an attempt grant, a findings acceptance, a scope approval, a CI
+    retry, a stop or a note, or escalate. It is protected by a token generated for this
+    process; the tokenized URL is printed to stdout once and never written to the log.
     Ctrl-C stops it and closes the socket.
     """
     factory_config = _load_config(config, data_dir)
@@ -1409,6 +1407,7 @@ def dashboard_command(
 
     from .dashboard import LOOPBACK_HOST, DashboardConfig
     from .dashboard.actions import ResumeActions
+    from .dashboard.events_route import run_versions_reader
     from .dashboard.pending import with_pending
     from .escalation_protocol import ReplyPolicy
     from .models import RunListFilter
@@ -1564,6 +1563,7 @@ def dashboard_command(
                 run_diff_provider=lambda run_id, attempt: build_run_diff(store, run_id, attempt),
                 run_transcript_provider=call_transcript_reader(store.runs_dir),
                 run_prompt_provider=call_prompt_reader(store.runs_dir),
+                run_versions_provider=run_versions_reader(store.runs_dir),
                 resume_request_reader=build_resume_request_reader(store),
                 resume_actions=ResumeActions(
                     run_reader=build_resume_run_reader(store),

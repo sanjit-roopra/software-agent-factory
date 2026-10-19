@@ -445,6 +445,9 @@ Newer and Older buttons page through the matches. The comparison stops polling
 once both runs are over.
 The page refreshes the open view every 2 seconds while it shows a run that is still
 going, and every 15 seconds otherwise. A hidden tab does not refresh.
+The page also keeps one event stream open at `/api/events`. When a run file changes,
+the stream tells the page, and the page refreshes the open view at once. While the
+stream is open, the page polls only every 15 seconds (ADR-077).
 The Runs view starts with one overview row. It shows the number of runs, the
 succeeded, failed and active runs, and the runs that need you. It also shows total
 tokens and the cost of all runs. The cost is the list-price estimate in USD and the

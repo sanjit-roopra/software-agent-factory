@@ -1,5 +1,43 @@
 # Architecture Decisions
 
+## ADR-077: Push run changes to the dashboard over one event stream
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+ADR-076 made the page poll every 2 seconds while a run can change, else every 15
+seconds. A run that starts while the page shows only finished runs can take 15
+seconds to show. A page that shows a working run asks the server for the whole
+view every 2 seconds, also when nothing changed.
+
+### Decision
+
+The page opens one Server-Sent Events stream at `GET /api/events`. The route
+needs the session cookie or the token header, like every other read. Once a
+second the stream reads the change time of each `runs/<id>/run.json`. When a file
+changes, appears or goes away, it sends a `runs-changed` event that names those
+run ids, at most 100, else "any run". The event id is the newest change time it
+saw. A browser that connects again sends it back as `Last-Event-ID` and gets the
+runs that changed while it was away. The stream sends nothing else from a run.
+
+On an event the page fetches the open view again at once. A run page does this
+only for its own run. While the stream is open, the poll runs every 15 seconds as
+a safety net. When the stream breaks, the page polls as in ADR-076 until the
+browser connects again.
+
+A stream ends after five minutes, and the browser connects again. At most eight
+streams are open at once. One more gets `503`, and that page polls. Each stream
+holds one server thread. This is the same idea as the latest event id that
+OpenHands uses to resume its event stream.
+
+### Consequences
+
+A change shows in about 1 to 3 seconds on every view. A page that shows a working
+run asks for the view only when its run changes. A run that turns stale
+with no new write still shows within 15 seconds. Each open stream reads the run
+directory once a second. No dashboard write action changes.
+
 ## ADR-076: Poll fast only while a run can change, and cache the script and stylesheet
 
 Status: accepted on 2026-10-19.
