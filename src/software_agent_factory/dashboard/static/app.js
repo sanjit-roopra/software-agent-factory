@@ -2031,6 +2031,7 @@
         return [tokenClass.label, displayNumber(usage[tokenClass.key])];
       }),
       ...fallbackFields(call.fallback_reason),
+      ...timingFields(call.performance, call.duration_ms),
       ...toolCallFields(call.tool_calls, call.tool_call_count),
       ...reasonFields(call.failure_reason, call.failure_reason_truncated, runId)
     ];
@@ -2051,6 +2052,24 @@
 
   function fallbackFields(reason) {
     return typeof reason === "string" && reason !== "" ? [["Why it fell back", reason]] : [];
+  }
+
+  // Where the call's time went: starting the runtime, waiting for its first event, in all.
+  // Shown only when the runtime measured the start or the first event.
+  function timingFields(performance, totalMs) {
+    const parts = [];
+    for (const [label, ms] of [
+      ["boot", performance?.process_boot_ms],
+      ["first event", performance?.first_event_ms]
+    ]) {
+      if (isFiniteNumber(ms)) {
+        parts.push(label + " " + durationText(Math.round(ms)));
+      }
+    }
+    if (parts.length > 0 && isFiniteNumber(totalMs)) {
+      parts.push("total " + durationText(totalMs));
+    }
+    return parts.length === 0 ? [] : [["Timing", parts.join(" \u00b7 ")]];
   }
 
   function toolLine(tool) {

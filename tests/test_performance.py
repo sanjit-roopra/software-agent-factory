@@ -378,16 +378,10 @@ def test_dashboard_sanitization_for_performance() -> None:
         "diff_content": "--- a/foo\n+++ b/foo",
     }
     sanitized = sanitize_performance(raw)
-    assert sanitized["prompt_chars"] == 500
-    assert sanitized["response_chars"] == 200
-    assert sanitized["process_boot_ms"] == 35.5
-    assert sanitized["first_event_ms"] == 110.2
-    assert "stage.IMPLEMENTING" in sanitized["durations_ms"]
-    assert "invalid" not in sanitized["durations_ms"]
-    assert sanitized["counters"]["gate_failures_total"] == 2
-    # Ensure sensitive fields are completely dropped
-    assert "sensitive_prompt_text" not in sanitized
-    assert "diff_content" not in sanitized
+    # Only the call timings the Steps view shows are kept; everything else is dropped.
+    assert sanitized == {"process_boot_ms": 35.5, "first_event_ms": 110.2}
+    assert sanitize_performance({"process_boot_ms": -1, "first_event_ms": "x"}) == {}
+    assert sanitize_performance(["not", "a", "record"]) == {}
 
 
 def test_cli_output_status_report_renders_rework() -> None:

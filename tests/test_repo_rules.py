@@ -20,7 +20,7 @@ OVERSIZED_MODULES = {
     "cli.py": 1806,
     "escalation.py": 1501,
     "projects.py": 1690,
-    "dashboard/sanitize.py": 1038,
+    "dashboard/sanitize.py": 1016,
     "service.py": 951,
     "scheduler.py": 961,
     "repository_profile.py": 970,

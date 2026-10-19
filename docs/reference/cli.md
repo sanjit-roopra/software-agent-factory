@@ -477,7 +477,9 @@ The steps start in a short view: one line per call with a role icon, the role, t
 outcome and the duration bar. A reviewer line adds the review verdict, and a tester line
 adds the tester result. "Show all detail" adds the model, tokens, cost and totals, and the
 page remembers the choice in this browser. An open call also lists the files it wrote,
-the checks of its attempt and the verdict on that attempt (ADR-066).
+the checks of its attempt and the verdict on that attempt (ADR-066). An open call shows
+the time the runtime took to start, the time until its first event and the total, when
+it was measured (ADR-069).
 
 The Changes tab shows the patch one file at a time. "Split view" puts the old lines on
 the left and the new lines on the right, and the page remembers the choice in this

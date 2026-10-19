@@ -3148,10 +3148,18 @@ def test_call_drops_fields_outside_the_allowlist() -> None:
 def test_call_keeps_sanitized_performance_only_when_provided() -> None:
     assert "performance" not in sanitize_invocation(_raw_call())
 
-    call = sanitize_invocation(_raw_call(performance={"prompt_chars": 5, "logs": SECRET_MARKER}))
+    performance = {"process_boot_ms": 5, "prompt_chars": 5, "logs": SECRET_MARKER}
+    call = sanitize_invocation(_raw_call(performance=performance))
 
-    assert call["performance"] == {"prompt_chars": 5}
+    assert call["performance"] == {"process_boot_ms": 5.0}
     assert list(call)[-1] == "performance"
+
+
+def test_run_list_and_detail_leave_run_performance_out() -> None:
+    raw = {"run_id": "r", "performance": {"durations_ms": {"stage.PLANNING": 5.0}}}
+
+    assert "performance" not in sanitize_run_summary(raw)
+    assert "performance" not in sanitize_run_detail(raw)
 
 
 # --------------------------------------------------------------------------
