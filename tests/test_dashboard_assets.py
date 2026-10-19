@@ -398,7 +398,10 @@ def test_dirty_guard_checks_focused_fields_and_open_dialogs() -> None:
         "isDirty(document.getElementById(DIRTY_REGIONS[view] ?? VIEWS[view].section))"
         in refresh_view
     )
-    assert 'const DIRTY_REGIONS = { run: "next-step", runs: "runs-body" };' in js
+    assert (
+        'const DIRTY_REGIONS = { run: "next-step", runs: "runs-body", compare: "compare-content" };'
+        in js
+    )
 
 
 def test_typing_in_the_needs_you_panel_freezes_only_the_panel() -> None:
@@ -2054,20 +2057,20 @@ def test_compare_routes_carry_up_to_two_run_ids_checked_with_the_run_pattern() -
     assert "resetCompareStatus(state.compare);" in function_source(_JS, "applyRoute")
 
 
-def test_the_pickers_always_load_and_the_comparison_loads_once_both_runs_are_chosen() -> None:
+def test_the_compare_refresh_loads_only_what_is_due_and_else_pings() -> None:
     refresh = function_source(_JS, "refreshCompare")
-    assert "const tasks = [refreshCompareRuns(request)];" in refresh
-    assert (
-        "if (isCompleteSelection(request.compare)) { tasks.push(refreshComparison(request)); }"
-        in refresh
-    )
+    assert "const due = compareDue(list, request.compare, state.compareLoaded);" in refresh
+    assert "if (due.list) { tasks.push(refreshCompareRuns(request" in refresh
+    assert "if (due.comparison) { tasks.push(refreshComparison(request)); }" in refresh
+    assert "return tasks.length === 0 ? [pingServer()] : tasks;" in refresh
     assert "compare: refreshCompare," in object_literal_source(_JS, "REFRESHERS")
     compare_path = function_source(_JS, "refreshComparison")
     assert "encodeURIComponent(request.compare.a)" in compare_path
     assert '"&b=" + encodeURIComponent(request.compare.b)' in compare_path
-    assert "whenLatest(request, renderComparison)" in compare_path
-    assert 'const query = "limit=" + MAX_RUNS_LIMIT + "&offset=0";' in function_source(
-        _JS, "refreshCompareRuns"
+    assert "state.compareLoaded.settled = settledKey(payload, request.compare);" in compare_path
+    assert "renderComparison(payload);" in compare_path
+    assert "state.compareLoaded = { list: null, settled: null };" in function_source(
+        _JS, "applyRoute"
     )
 
 
