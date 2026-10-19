@@ -1594,6 +1594,8 @@ passed and skipped, for the Steps list (ADR-066). The Review card asks `GET /api
 round and the open and accepted findings, each text cut to 2,000 characters.
 The Plan card asks `GET /api/runs/<id>/plan` for the goal, the plan steps, the
 expected scope and the change set, each text cut to 2,000 characters. The
+run detail also carries the run's last 200 state moves. Each has its two states,
+its time and a reason that is redacted and cut to 500 characters (ADR-067). The
 Changes card asks `GET /api/runs/<id>/diff` for the saved patch, split per file
 with its added and removed line counts. `?attempt=n` picks the patch of one
 attempt. The file text stops at 256 KB, and a file past that keeps only its

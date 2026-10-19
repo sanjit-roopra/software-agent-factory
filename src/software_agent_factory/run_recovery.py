@@ -44,6 +44,7 @@ from .run_context import (
     TransitionError,
     delivery_policy_fingerprint,
 )
+from .stage_history import leave_state
 from .workspace import GitWorktreeWorkspace, WorkspaceError
 
 if TYPE_CHECKING:
@@ -307,6 +308,7 @@ def restart_at(controller: WorkflowController, run: FactoryRun, state: WorkflowS
     now = utc_now()
     run = run.model_copy(
         update={
+            "transitions": leave_state(run, state, now, RESTART_REASON, timed=False),
             "state": state,
             "updated_at": now,
             "state_started_at": now,

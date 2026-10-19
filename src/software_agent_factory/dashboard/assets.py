@@ -193,6 +193,7 @@ def render_index_html(*, token: str) -> str:
           </p>
           <p id="run-headline" class="headline" hidden></p>
           <p id="run-status-line" class="status-line" hidden></p>
+          <ol id="run-stages" class="stages" aria-label="Stages" hidden></ol>
           <p id="run-reason-more" hidden>
             <button id="run-reason-show" type="button">Show full failure reason</button>
           </p>

@@ -64,6 +64,7 @@ from .resume_classes import (
 )
 from .run_context import Halt, TransitionError
 from .run_recovery import DELIVERY_REPO_CHANGED
+from .stage_history import leave_state
 from .workspace import GitWorktreeWorkspace, WorkspaceError
 
 if TYPE_CHECKING:
@@ -87,16 +88,7 @@ def transition_reopened(controller: WorkflowController, run: FactoryRun) -> Fact
     target_state = _reopen_target_state(controller, run, escalation, receipt)
 
     now = utc_now()
-    stage_name = run.state.value
-    stage_started_at = run.state_started_at or run.updated_at
-    stage_duration_ms = max(0.0, (now - stage_started_at).total_seconds() * 1000.0)
-    run.performance.record_duration(
-        f"stage.{stage_name}",
-        stage_duration_ms,
-        stage=stage_name,
-        operation="stage",
-        accumulate=True,
-    )
+    transitions = leave_state(run, target_state, now, "reopened from escalation")
     updated_receipts = [
         (
             r.model_copy(update={"dispatched_at": now})
@@ -117,6 +109,7 @@ def transition_reopened(controller: WorkflowController, run: FactoryRun) -> Fact
         }
     )
     updates: dict[str, object] = {
+        "transitions": transitions,
         "state": target_state,
         "updated_at": now,
         "state_started_at": now,

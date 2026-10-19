@@ -135,6 +135,9 @@ def test_a_granted_run_makes_exactly_one_attempt_and_can_finish(
     assert granted.escalation.status is EscalationStatus.RESUMED
     assert granted.escalation.reopen_count == 1
     assert granted.attempt_records[-1].triggered_by is AttemptTrigger.OPERATOR
+    reopened = [move for move in granted.transitions if move.reason == "reopened from escalation"]
+    assert [move.from_state for move in reopened] == [WorkflowState.NEEDS_HUMAN]
+    assert granted.transitions[-1].to_state is WorkflowState.PR_READY
     repair = rig.requests[-1].repair_context
     assert repair is not None
     assert repair.trigger is AttemptTrigger.OPERATOR
