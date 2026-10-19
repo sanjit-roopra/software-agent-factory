@@ -13,6 +13,7 @@ from ..models import WorkflowState
 from .aggregate import call_total_tokens, compare_roles, models_of, models_summary, run_totals
 from .looping import active_looping_note
 from .next_step import NextStepKind, next_step
+from .now_running import sanitize_active_calls
 from .overview import (
     flag_failing_call,
     headline,
@@ -141,12 +142,14 @@ def run_summary_view(raw: Any) -> dict[str, Any]:
 
 
 def summary_view(snapshot: Any) -> dict[str, Any]:
-    """The ``overview`` row the Runs page shows. The handler adds ``health``.
+    """The ``overview`` row and the ``now_running`` calls the Runs page shows.
 
-    Nothing else of the snapshot is passed on (see :data:`.sanitize.SUMMARY_FIELDS`).
+    The handler adds ``health``. Nothing else of the snapshot is passed on (see
+    :data:`.sanitize.SUMMARY_FIELDS`).
     """
     raw = snapshot if isinstance(snapshot, dict) else {}
-    return sanitize_summary({"overview": snapshot_overview(raw)})
+    now_running = sanitize_active_calls(raw.get("active_calls"))
+    return sanitize_summary({"overview": snapshot_overview(raw), "now_running": now_running})
 
 
 def project_view(raw: Any) -> dict[str, Any]:

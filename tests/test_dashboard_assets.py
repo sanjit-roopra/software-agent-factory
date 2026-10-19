@@ -295,10 +295,12 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     assert re.search(r"dd\s*\{[^}]*overflow-wrap:\s*anywhere;", css)
     assert "overflow-x: hidden" not in css
     # The only clips are the screen-reader text, the reason block, the title of the run
-    # list, the last tool of the running call and the run list cells, each cut to one line.
+    # list, the last tool of the running call, the run list cells and the title of a call
+    # in progress, each cut to one line.
     # The screen-reader text clips so its absolute box never widens the page.
     clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
     assert [selector.strip() for selector in clipped] == [
+        ".now-title",
         ".visually-hidden",
         "#runs-table td",
         "#runs-table td:first-child a",
@@ -1920,11 +1922,6 @@ def test_the_compare_link_names_its_run_for_a_screen_reader_and_survives_a_refre
     assert "setText(link.lastElementChild, entry.hidden)" in patch
     assert 'if (link?.tagName !== "A")' in patch
     assert "patchLinkCell(cell, entry)" in function_source(_JS, "patchCell")
-
-
-def test_a_click_on_a_link_in_a_run_row_does_not_open_the_run() -> None:
-    click = listener_source(_JS, "bindControls", 'document.getElementById("runs-body")', "click")
-    assert 'if (row && !event.target.closest("a"))' in click
 
 
 # --------------------------------------------------------------------------

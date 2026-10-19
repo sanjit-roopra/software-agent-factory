@@ -668,10 +668,10 @@ def test_summary_view_carries_the_overview() -> None:
     assert summary[OVERVIEW_KEY]["runs"] == 10
 
 
-def test_summary_view_keeps_only_the_overview_of_the_snapshot() -> None:
+def test_summary_view_keeps_only_the_overview_and_the_calls_in_progress() -> None:
     summary = summary_view(_raw_snapshot(attempts_by_model={SECRET: 3}, runs=[], page={}))
 
-    assert sorted(summary) == [OVERVIEW_KEY]
+    assert sorted(summary) == ["now_running", OVERVIEW_KEY]
 
 
 def test_summary_view_of_something_that_is_not_a_snapshot_is_an_empty_overview() -> None:

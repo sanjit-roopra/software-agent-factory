@@ -1,5 +1,38 @@
 # Architecture Decisions
 
+## ADR-073: Show the calls in progress above the run list and make each run row a link
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The Runs view counted the active runs but did not say what they were doing. To
+see which agent was at work, the operator had to open each run. A run row opened
+its run through a click handler on the row. So a middle click, or a Ctrl or Cmd
+click, did not open the run in a new tab as a link does.
+
+### Decision
+
+The monitoring snapshot gets `active_calls`: the call in progress of each
+unfinished run it scanned, newest first, at most 20. Each has the run id and title,
+the role, the model and the start time. `/api/summary` sends them as
+`now_running`, after the dashboard keeps only those fields, redacts the title and
+model, and drops a call whose run id is not valid. The Runs view shows them in a
+"Now running" list above the run list. The time since each call started counts up
+every second. The list is hidden when no call is in progress.
+
+The title link of a run row now covers the whole row with CSS, and the row click
+handler is gone. A click anywhere on the row follows the link, so the browser's
+own new-tab clicks work. The other links in the row, and the tags, sit above it.
+A row with focus inside it gets the hover color.
+
+### Consequences
+
+The snapshot reads the title of each active run, which it did before only for the
+page of runs it returned. With the list capped at 20, that is a small cost. A
+pointer over a cell now shows the tooltip of the title link, not the tooltip of
+that cell.
+
 ## ADR-072: Ship the Inter font and show placeholder bars while the dashboard loads
 
 Status: accepted on 2026-10-19.

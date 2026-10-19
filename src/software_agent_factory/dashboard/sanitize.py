@@ -890,9 +890,9 @@ def sanitize_project(raw: Any) -> dict[str, Any]:
     return sanitized
 
 
-#: Fields of ``/api/summary``: the two the page reads. The snapshot behind it also lists
+#: Fields of ``/api/summary``: the three the page reads. The snapshot behind it also lists
 #: tallies keyed by model name, which nothing here redacts, so none of it is passed on.
-SUMMARY_FIELDS: frozenset[str] = frozenset({"overview", "health"})
+SUMMARY_FIELDS: frozenset[str] = frozenset({"overview", "health", "now_running"})
 
 
 def sanitize_summary(data: dict[str, Any]) -> dict[str, Any]:
