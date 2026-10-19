@@ -56,6 +56,7 @@ import json
 import os
 import re
 import socket
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -640,7 +641,7 @@ def build_monitoring_snapshot(
     attempts_by_role, attempts_by_model = _compute_attempt_tallies(scan.readable_runs)
     metrics = _compute_aggregate_metrics(scan.readable_runs)
 
-    listed = _listed_runs(store, scan, run_filter)
+    listed = _listed_runs(store, scan, run_filter, reference_time, stale_after)
     total_readable = len(listed)
     page_runs = listed[offset : offset + limit]
     summaries = [
@@ -881,30 +882,26 @@ def _is_stale(run: FactoryRun, now: datetime, stale_after: timedelta) -> bool:
     return (now - signal) > stale_after
 
 
+def _list_states(run: FactoryRun, now: datetime, stale_after: timedelta) -> tuple[str, ...]:
+    """The run list states ``run`` is in: its class, and ``stuck`` too when active and stale."""
+    classification = _classify_run(run)
+    if classification == "active" and _is_stale(run, now, stale_after):
+        return (classification, "stuck")
+    return (classification,)
+
+
 def _compute_state_counts(
     runs: list[FactoryRun],
     now: datetime,
     stale_after: timedelta,
 ) -> RunStateCounts:
-    succeeded = escalated = failed = active = stale_active = 0
-    for run in runs:
-        classification = _classify_run(run)
-        if classification == "escalated":
-            escalated += 1
-        elif classification == "failed":
-            failed += 1
-        elif classification == "succeeded":
-            succeeded += 1
-        else:
-            active += 1
-            if _is_stale(run, now, stale_after):
-                stale_active += 1
+    tally = Counter(state for run in runs for state in _list_states(run, now, stale_after))
     return RunStateCounts(
-        succeeded=succeeded,
-        escalated=escalated,
-        failed=failed,
-        active=active,
-        stale_active=stale_active,
+        succeeded=tally["succeeded"],
+        escalated=tally["escalated"],
+        failed=tally["failed"],
+        active=tally["active"],
+        stale_active=tally["stuck"],
     )
 
 
@@ -1057,7 +1054,11 @@ def _artifact_facts(store: RunStoreProtocol, run_id: str) -> _ArtifactFacts:
 
 
 def _listed_runs(
-    store: RunStoreProtocol, scan: RunScanResult, run_filter: RunListFilter | None
+    store: RunStoreProtocol,
+    scan: RunScanResult,
+    run_filter: RunListFilter | None,
+    now: datetime,
+    stale_after: timedelta,
 ) -> list[FactoryRun]:
     """The scanned runs ``run_filter`` keeps, in its order. Newest first by default."""
     if run_filter is None:
@@ -1065,7 +1066,8 @@ def _listed_runs(
     kept = [
         run
         for run in scan.readable_runs
-        if _run_matches(store, run, run_filter, scan.artifact_facts)
+        if (run_filter.state is None or run_filter.state in _list_states(run, now, stale_after))
+        and _run_matches(store, run, run_filter, scan.artifact_facts)
     ]
     return kept[::-1] if run_filter.oldest_first else kept
 
@@ -1076,8 +1078,6 @@ def _run_matches(
     run_filter: RunListFilter,
     memo: dict[str, _ArtifactFacts],
 ) -> bool:
-    if run_filter.state is not None and _classify_run(run) != run_filter.state:
-        return False
     if run_filter.text is None and run_filter.project_id is None:
         return True
     facts = _memoized_artifact_facts(store, run.id, memo)

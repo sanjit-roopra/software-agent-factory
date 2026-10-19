@@ -113,6 +113,7 @@ def _paragraph(text: str) -> dict[str, str]:
 _duration = partial(_case, "durationText")
 _partial_note = partial(_case, "partialNote")
 _cost = partial(_case, "costText")
+_cost_title = partial(_case, "costTitle")
 _premium = partial(_case, "premiumRequestsPhrase")
 _money = partial(_case, "moneyText")
 _relative = partial(_case, "relativeTimeText")
@@ -203,16 +204,16 @@ FORMATTER_CASES = [
     _cost("usd-rounds-at-three-decimals", "$0.123 AI usage", {USAGE_USD: 0.1234567}),
     _cost("list-price-has-no-unit-suffix", "$12.00", {LIST_USD: 12}),
     _cost("list-price-under-a-dollar", LIST_PRICE_TEXT, {LIST_USD: 0.039188}),
-    _cost(
-        "all-units-in-order",
-        "2 premium requests, $3.25 AI usage, $4.00",
+    _cost("one-unit-ai-usage-first", "$3.25 AI usage", {LIST_USD: 4, USAGE_USD: 3.25, PREMIUM: 2}),
+    _cost("one-unit-list-price-next", "$4.00", {PREMIUM: 2, USAGE_USD: None, LIST_USD: 4}),
+    _cost_title(
+        "the-other-units-in-order",
+        "$4.00, 2 premium requests",
         {LIST_USD: 4, USAGE_USD: 3.25, PREMIUM: 2},
     ),
-    _cost(
-        "skips-the-unreported-unit",
-        "2 premium requests, $4.00",
-        {PREMIUM: 2, USAGE_USD: None, LIST_USD: 4},
-    ),
+    _cost_title("skips-the-unreported-unit", TWO_PREMIUM_REQUESTS, {PREMIUM: 2, LIST_USD: 4}),
+    _cost_title("one-unit-has-no-title", "", {PREMIUM: 2}),
+    _cost_title(EMPTY, "", {}),
     _money("null", NOT_REPORTED, None),
     _money("text", NOT_REPORTED, "1"),
     _money("nan", NOT_REPORTED, NAN),
@@ -347,8 +348,8 @@ FORMATTER_CASES = [
         _TOTALS,
     ),
     _total_cells(
-        "the-total-row-keeps-each-cost-unit",
-        [TOTAL_LABEL, "1 call", "1 s", "5", "2 premium requests, $0.500 AI usage, $0.039"],
+        "the-total-row-shows-one-cost-unit",
+        [TOTAL_LABEL, "1 call", "1 s", "5", "$0.500 AI usage"],
         {
             CALLS: 1,
             DURATION_MS: {TOTAL: 1000},

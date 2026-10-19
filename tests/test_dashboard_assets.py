@@ -1643,6 +1643,24 @@ def test_the_needs_you_and_active_tiles_are_whole_tile_links_to_their_filter() -
     assert 'const FILTER_ACTIVE = "active";' in _JS
 
 
+def test_the_success_tile_links_to_done_runs_and_the_cost_tile_to_failed_runs() -> None:
+    assert re.search(
+        r'<li class="stat stat-link">\s*<a id="figure-success-link" href="#runs\?state=succeeded">',
+        _RUNS_HTML,
+    )
+    assert '<a id="figure-week-link" class="stat-note" href="#runs?state=failed">' in _RUNS_HTML
+    assert '<option value="stuck">Stuck</option>' in _RUNS_HTML
+
+
+def test_a_step_and_the_total_row_put_the_other_cost_units_in_the_tooltip() -> None:
+    assert "setTitle(row.lastElementChild, costTitle(call.usage || {}));" in function_source(
+        _JS, "patchCall"
+    )
+    assert "setTitle(row.lastElementChild, costTitle(totalCosts(totals)));" in function_source(
+        _JS, "patchTotalRow"
+    )
+
+
 def test_the_route_filter_accepts_only_needs_you_and_active() -> None:
     assert function_source(_JS, "routeFilter") == (
         "function routeFilter(query) { "
@@ -2212,7 +2230,7 @@ def test_the_steps_are_a_table_of_calls_with_a_total_row_in_its_foot() -> None:
         timeline
     )
     total = function_source(_JS, "totalCells")
-    for wired in ("TOTAL_LABEL", "totals.calls", "totals.duration_ms?.total", "totalCostText"):
+    for wired in ("TOTAL_LABEL", "totals.calls", "totals.duration_ms?.total", "totalCosts"):
         assert wired in total
     assert "totals.total_tokens?.total" in total
 

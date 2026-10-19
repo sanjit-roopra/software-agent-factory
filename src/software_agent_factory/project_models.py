@@ -22,8 +22,9 @@ PROJECT_ID_PATTERN = r"^[A-Za-z0-9._-]{1,80}$"
 
 
 #: The run classes a run list can narrow to. They are the classes the monitoring snapshot
-#: counts: a run that waits for a person, a failed run, a finished run and any other run.
-RUN_LIST_STATES: frozenset[str] = frozenset({"escalated", "failed", "succeeded", "active"})
+#: counts: a run that waits for a person, a failed run, a finished run and any other run,
+#: plus ``stuck``, an active run with no sign of life within ``stale_after``.
+RUN_LIST_STATES: frozenset[str] = frozenset({"escalated", "failed", "succeeded", "active", "stuck"})
 
 
 class RunListFilter(NamedTuple):

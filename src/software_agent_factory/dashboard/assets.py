@@ -91,10 +91,12 @@ def render_index_html(*, token: str) -> str:
               <span class="stat-note">Show active runs</span>
             </a>
           </li>
-          <li class="stat">
-            <p class="stat-label">Success rate</p>
-            <p id="figure-success" class="stat-value">&mdash;</p>
-            <p id="figure-success-note" class="stat-note" hidden></p>
+          <li class="stat stat-link">
+            <a id="figure-success-link" href="#runs?state=succeeded">
+              <span class="stat-label">Success rate</span>
+              <span id="figure-success" class="stat-value">&mdash;</span>
+              <span id="figure-success-note" class="stat-note" hidden></span>
+            </a>
           </li>
           <li class="stat">
             <p class="stat-label">Cost, last 7 days {COST_INFO}</p>
@@ -102,6 +104,8 @@ def render_index_html(*, token: str) -> str:
             <p id="figure-week-note" class="stat-note" hidden></p>
             <svg id="figure-week-trend" class="sparkline" viewBox="0 0 70 20"
               preserveAspectRatio="none" aria-hidden="true" focusable="false"></svg>
+            <a id="figure-week-link" class="stat-note" href="#runs?state=failed">
+              Show failed runs</a>
           </li>
         </ul>
         <p id="overview-note" class="stat-note" hidden></p>
@@ -123,6 +127,7 @@ def render_index_html(*, token: str) -> str:
             <option value="">All states</option>
             <option value="escalated">Needs you</option>
             <option value="active">Active</option>
+            <option value="stuck">Stuck</option>
             <option value="failed">Failed</option>
             <option value="succeeded">Done</option>
           </select>

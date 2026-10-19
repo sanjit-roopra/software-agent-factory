@@ -55,7 +55,7 @@
   const MAX_RUNS_OFFSET = 1000000;
   // RUN_LIST_STATES in project_models.py, MAX_SEARCH_LENGTH in dashboard/snapshot.py and
   // PROJECT_ID_PATTERN in project_models.py: what the run list filters on the server take.
-  const RUN_STATES = new Set(["escalated", "active", "failed", "succeeded"]);
+  const RUN_STATES = new Set(["escalated", "active", "stuck", "failed", "succeeded"]);
   const MAX_SEARCH_LENGTH = 100;
   const PROJECT_ID_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
   const SORT_OLDEST = "oldest";
@@ -156,6 +156,10 @@
       help: "Estimate in USD from list prices, not what a provider billed.",
       phrase: moneyText
     }
+  ];
+  // The run list's order of cost units: a step or total row shows the first one reported.
+  const PRIMARY_COST_KEYS = [
+    "usage_value_usd", "list_price_estimate_usd", "total_premium_request_cost"
   ];
   // SUCCESS and FAILED are STATUS_SUCCESS and STATUS_FAILED in dashboard/aggregate.py.
   // The rest are the liveness statuses in ACTIVE_INVOCATION_STATUSES in dashboard/sanitize.py.
@@ -1857,17 +1861,23 @@
     return OUTCOMES.get(status) || UNREPORTED_OUTCOME;
   }
 
-  // Every cost unit the call reported, each in its own unit.
-  function costText(usage) {
-    const phrases = COST_UNITS.filter(function (unit) {
-      return isFiniteNumber(usage[unit.key]);
-    }).map(function (unit) {
-      return unit.phrase(usage[unit.key]);
+  // Each cost unit reported, as its own phrase, in the run list's order: the AI usage value,
+  // the list price, then premium requests. No unit is added to another.
+  function costPhrases(costs) {
+    return PRIMARY_COST_KEYS.filter(function (key) {
+      return isFiniteNumber(costs[key]);
+    }).map(function (key) {
+      return COST_UNITS.find(function (unit) { return unit.key === key; }).phrase(costs[key]);
     });
-    if (phrases.length === 0) {
-      return NOT_REPORTED;
-    }
-    return phrases.join(", ");
+  }
+
+  // A step shows one cost unit, like the run list; the others go in its tooltip.
+  function costText(costs) {
+    return costPhrases(costs)[0] ?? NOT_REPORTED;
+  }
+
+  function costTitle(costs) {
+    return costPhrases(costs).slice(1).join(", ");
   }
 
   function cutNote(runId) {
@@ -2269,6 +2279,7 @@
     for (const [index, text] of columns.entries()) {
       setText(row.children[index + 1].firstElementChild, text);
     }
+    setTitle(row.lastElementChild, costTitle(call.usage || {}));
     patchStepExtras(row, call, scale);
     row.children[OUTCOME_CELL].className = callOutcome(call).className;
     row.classList.toggle("call-rejected", call.failure_link === "rejected");
@@ -2279,14 +2290,11 @@
     syncReasonButton(fields.nextElementSibling, reason);
   }
 
-  // Each cost unit the calls reported, each in its own unit.
-  function totalCostText(totals) {
-    const phrases = COST_UNITS.filter(function (unit) {
-      return isFiniteNumber(totals.costs?.[unit.key]?.total);
-    }).map(function (unit) {
-      return unit.phrase(totals.costs[unit.key].total);
-    });
-    return phrases.length === 0 ? NOT_REPORTED : phrases.join(", ");
+  // The total of each cost unit the calls reported, keyed like one call's usage.
+  function totalCosts(totals) {
+    return Object.fromEntries(COST_UNITS.map(function (unit) {
+      return [unit.key, totals.costs?.[unit.key]?.total];
+    }));
   }
 
   function callCountText(calls) {
@@ -2302,7 +2310,7 @@
       callCountText(totals.calls),
       durationText(totals.duration_ms?.total),
       displayNumber(totals.total_tokens?.total),
-      totalCostText(totals)
+      costText(totalCosts(totals))
     ];
   }
 
@@ -2316,6 +2324,7 @@
     for (const [index, text] of figures.entries()) {
       setText(childAt(row, index + 1, "td"), text);
     }
+    setTitle(row.lastElementChild, costTitle(totalCosts(totals)));
   }
 
   // Finished calls come sorted by number; the running call comes last. The total row

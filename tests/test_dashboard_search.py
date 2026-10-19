@@ -100,6 +100,29 @@ def test_the_filter_narrows_and_orders_the_page_but_not_the_counts(tmp_path: Pat
     )
 
 
+def test_the_stuck_filter_keeps_active_runs_with_no_sign_of_life(tmp_path: Path) -> None:
+    store = _store(tmp_path)
+    for run_id, minutes in (("run-quiet", 40), ("run-busy", 1)):
+        moment = T0 - timedelta(minutes=minutes)
+        store.save_run(
+            FactoryRun(
+                id=run_id,
+                work_item_id=f"WI-{run_id}",
+                state=WorkflowState.IMPLEMENTING,
+                created_at=moment,
+                updated_at=moment,
+            )
+        )
+
+    stuck = RunListFilter(state="stuck")
+    snapshot = build_monitoring_snapshot(
+        store, now=T0, stale_after=timedelta(minutes=30), run_filter=stuck
+    )
+    assert [run.run_id for run in snapshot.runs] == ["run-quiet"]
+    assert snapshot.counts.stale_active == 1
+    assert _ids(store, RunListFilter(state="active")) == ["run-busy", "run-quiet"]
+
+
 def test_parse_run_filter_reads_the_query_and_refuses_what_it_cannot_take() -> None:
     assert parse_run_filter({}) == RunListFilter()
     assert parse_run_filter(
@@ -108,12 +131,13 @@ def test_parse_run_filter_reads_the_query_and_refuses_what_it_cannot_take() -> N
     assert parse_run_filter({"q": ["   "], "sort": ["newest"]}) == RunListFilter()
     for bad in (
         {"q": ["x" * (MAX_SEARCH_LENGTH + 1)]},
-        {"state": ["stuck"]},
+        {"state": ["stalled"]},
         {"project": ["../etc"]},
         {"sort": ["random"]},
     ):
         assert parse_run_filter(bad) is None
-    assert RUN_LIST_STATES == {"escalated", "failed", "succeeded", "active"}
+    assert RUN_LIST_STATES == {"escalated", "failed", "succeeded", "active", "stuck"}
+    assert parse_run_filter({"state": ["stuck"]}) == RunListFilter(state="stuck")
 
 
 # -- /api/runs -----------------------------------------------------------------
@@ -160,7 +184,7 @@ def test_api_runs_passes_a_filter_only_when_one_is_asked_for(
     ]
 
 
-@pytest.mark.parametrize("query", ["state=stuck", "sort=up", "project=a%2Fb", "q=" + "x" * 101])
+@pytest.mark.parametrize("query", ["state=stalled", "sort=up", "project=a%2Fb", "q=" + "x" * 101])
 def test_api_runs_refuses_a_filter_it_cannot_take(
     server: tuple[DashboardServer, list[dict[str, Any]]], query: str
 ) -> None:
@@ -181,7 +205,8 @@ def test_a_runs_hash_carries_the_search_and_page_and_reads_back_the_same() -> No
         JsCall("runsHash", (empty, 0)),
         JsCall("runsHash", (search, 40)),
         JsCall("routeSearch", ("q=login+page&state=failed&project=alpha&sort=oldest",)),
-        JsCall("routeSearch", ("state=stuck&project=..%2Fx&sort=up&q=",)),
+        JsCall("routeSearch", ("state=stalled&project=..%2Fx&sort=up&q=",)),
+        JsCall("routeSearch", ("state=stuck",)),
         JsCall("routeOffset", ("offset=40",)),
         JsCall("routeOffset", ("offset=-3",)),
         JsCall("routeOffset", ("offset=2.5",)),
@@ -191,6 +216,7 @@ def test_a_runs_hash_carries_the_search_and_page_and_reads_back_the_same() -> No
         "#runs?q=login+page&state=failed&project=alpha&sort=oldest&offset=40",
         search,
         empty,
+        {**empty, "state": "stuck"},
         40,
         0,
         0,

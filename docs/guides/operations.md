@@ -114,13 +114,18 @@ does not show command logs, diffs, prompts, raw comments, or raw artifacts.
 
 The Runs page starts with four tiles: **Needs you**, **Active**, **Success
 rate**, and **Cost, last 7 days**. Select **Needs you** or **Active** to show
-only those runs. The cost tile has a line with the cost of each day.
+only those runs. Select **Success rate** to show the done runs. The cost tile
+has a line with the cost of each day and a link to the failed runs. The state
+list above the run list has a **Stuck** choice. It shows the active runs with
+no new signal for longer than the stale limit.
 
 Each run row shows its tokens and one cost in USD. The cost is the AI usage
 value when Copilot reported it. If not, it is the list-price estimate. The word
 after the amount says which one it is: `usage` or `list`. Premium requests are
-a separate count in the tooltip. The page never adds two units together. The
-`i` mark beside each cost heading explains the units.
+a separate count in the tooltip. Each step on the run page also shows one
+cost, in the same order, and the other units are in its tooltip. The page never
+adds two units together. The `i` mark beside each cost heading explains the
+units.
 
 ### Approve, answer or retry a halted run
 
