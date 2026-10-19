@@ -356,7 +356,9 @@ def test_one_poll_refreshes_only_the_open_view() -> None:
     code = normalized(js)
     assert code.count("setInterval(") == 1
     assert "globalThis.setInterval(tickTimers, TICK_INTERVAL_MS);" in code
-    assert "pollView();" in function_source(js, "pollTick")
+    tick = function_source(js, "pollTick")
+    # The next check is set before this one runs, so a throw cannot end the chain.
+    assert tick.index("setTimeout(pollTick, POLL_ACTIVE_MS);") < tick.index("pollView();")
     refreshers = object_literal_source(js, "REFRESHERS")
     assert re.findall(r"(\w+): (?:function|refreshCompare)", refreshers) == [
         "runs",

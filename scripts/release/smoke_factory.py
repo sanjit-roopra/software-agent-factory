@@ -15,6 +15,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import shutil
 import stat
 import subprocess
@@ -260,7 +261,8 @@ def _smoke_status(executable: Path, data_dir: Path) -> None:
 DASHBOARD_START_TIMEOUT_SECONDS = 30
 DASHBOARD_REQUEST_TIMEOUT_SECONDS = 10
 DASHBOARD_STOP_TIMEOUT_SECONDS = 10
-DASHBOARD_ASSETS = ("/assets/app.js", "/assets/style.css")
+#: The page names its script and stylesheet by their content (ADR-076).
+DASHBOARD_ASSET_PATTERN = re.compile(r'"(/assets/(?:app|style)\.[0-9a-f]+\.(?:js|css))"')
 
 
 def _smoke_dashboard_assets(executable: Path, data_dir: Path) -> None:
@@ -269,7 +271,9 @@ def _smoke_dashboard_assets(executable: Path, data_dir: Path) -> None:
     The assets are package data. A wheel, sdist or frozen bundle that misses
     them fails here instead of on a user's first ``factory dashboard``. The
     printed link carries the token in its query. Only the page route accepts that
-    (ADR-033), so the asset requests send the token in the header.
+    (ADR-033), so the requests send the token in the header. The page names the
+    script and stylesheet by their content (ADR-076), so the smoke reads both URLs
+    from the page.
     """
     process = subprocess.Popen(
         [str(executable), "dashboard", "--data-dir", str(data_dir), "--port", "0"],
@@ -281,22 +285,30 @@ def _smoke_dashboard_assets(executable: Path, data_dir: Path) -> None:
         url = _read_dashboard_url(process)
         parts = urlsplit(url)
         token = parse_qs(parts.query)["token"][0]
-        for asset in DASHBOARD_ASSETS:
-            request = urllib.request.Request(  # noqa: S310 - fixed loopback URL
-                f"{parts.scheme}://{parts.netloc}{asset}", headers={"X-Factory-Token": token}
-            )
-            with urllib.request.urlopen(
-                request, timeout=DASHBOARD_REQUEST_TIMEOUT_SECONDS
-            ) as response:  # noqa: S310
-                body = response.read()
-            if response.status != 200 or not body:
-                raise SystemExit(f"factory dashboard did not serve {asset}")
+        base = f"{parts.scheme}://{parts.netloc}"
+        page = _fetch_dashboard_path(base, "/", token).decode("utf-8")
+        assets = DASHBOARD_ASSET_PATTERN.findall(page)
+        if len(assets) != 2:
+            raise SystemExit("factory dashboard page names no script and stylesheet")
+        for asset in assets:
+            _fetch_dashboard_path(base, asset, token)
     finally:
         process.terminate()
         try:
             process.wait(timeout=DASHBOARD_STOP_TIMEOUT_SECONDS)
         except subprocess.TimeoutExpired:
             process.kill()
+
+
+def _fetch_dashboard_path(base: str, path: str, token: str) -> bytes:
+    request = urllib.request.Request(  # noqa: S310 - fixed loopback URL
+        f"{base}{path}", headers={"X-Factory-Token": token}
+    )
+    with urllib.request.urlopen(request, timeout=DASHBOARD_REQUEST_TIMEOUT_SECONDS) as response:  # noqa: S310
+        body: bytes = response.read()
+    if response.status != 200 or not body:
+        raise SystemExit(f"factory dashboard did not serve {path}")
+    return body
 
 
 def _read_dashboard_url(process: subprocess.Popen[str]) -> str:

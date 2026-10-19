@@ -5239,13 +5239,14 @@
   // run that turns active, or a newly opened active run, polls fast without waiting out
   // a slow delay. A check that is not due sends nothing.
   let lastPollAt = 0;
+  // The next check is set first, so an error in this one cannot stop the chain.
   function pollTick() {
+    globalThis.setTimeout(pollTick, POLL_ACTIVE_MS);
     const nowMs = Date.now();
     if (nowMs - lastPollAt >= pollDelay(state.view, state)) {
       lastPollAt = nowMs;
       pollView();
     }
-    globalThis.setTimeout(pollTick, POLL_ACTIVE_MS);
   }
 
   function applyRoute(moveFocus) {

@@ -759,7 +759,7 @@ def test_smoke_missing_git_prerequisite_rejects_a_traceback(tmp_path: Path) -> N
 _DASHBOARD_STUB = """#!{python}
 import http.server, os, pathlib, sys
 
-STATUS, BODY = {status}, {body!r}
+STATUS, BODY, PAGE = {status}, {body!r}, {page!r}
 pathlib.Path({pid_file!r}).write_text(str(os.getpid()))
 if {bad_first_line}:
     print("boom: no url here", flush=True)
@@ -771,10 +771,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
     def do_GET(self):
         # Like the dashboard: the token in the URL is not enough for an asset.
         authorized = self.headers.get("X-Factory-Token") == "t" and "?" not in self.path
-        self.send_response(STATUS if authorized else 401)
-        self.send_header("Content-Length", str(len(BODY)))
+        status, body = (200, PAGE) if self.path == "/" else (STATUS, BODY)
+        self.send_response(status if authorized else 401)
+        self.send_header("Content-Length", str(len(body)))
         self.end_headers()
-        self.wfile.write(BODY)
+        self.wfile.write(body)
 
     def log_message(self, *args):
         pass
@@ -786,8 +787,19 @@ server.serve_forever()
 """
 
 
+_STUB_PAGE = (
+    b'<link href="/assets/style.0123456789abcdef.css">'
+    b'<script src="/assets/app.0123456789abcdef.js"></script>'
+)
+
+
 def _dashboard_stub(
-    tmp_path: Path, *, status: int = 200, body: bytes = b"asset", bad_first_line: bool = False
+    tmp_path: Path,
+    *,
+    status: int = 200,
+    body: bytes = b"asset",
+    page: bytes = _STUB_PAGE,
+    bad_first_line: bool = False,
 ) -> tuple[Path, Path]:
     """A stub ``factory`` that serves every path on a free loopback port.
 
@@ -800,6 +812,7 @@ def _dashboard_stub(
             python=sys.executable,
             status=status,
             body=body,
+            page=page,
             pid_file=str(pid_file),
             bad_first_line=bad_first_line,
         ),
@@ -840,7 +853,7 @@ def test_smoke_dashboard_assets_rejects_a_status_other_than_200(tmp_path: Path) 
     module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
     stub, pid_file = _dashboard_stub(tmp_path, status=202, body=b"asset")
 
-    with pytest.raises(SystemExit, match="did not serve /assets/app.js"):
+    with pytest.raises(SystemExit, match="did not serve /assets/style.0123456789abcdef.css"):
         module._smoke_dashboard_assets(stub, tmp_path)
 
     _assert_process_gone(pid_file)
@@ -850,7 +863,19 @@ def test_smoke_dashboard_assets_rejects_an_empty_asset(tmp_path: Path) -> None:
     module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
     stub, pid_file = _dashboard_stub(tmp_path, body=b"")
 
-    with pytest.raises(SystemExit, match="did not serve /assets/app.js"):
+    with pytest.raises(SystemExit, match="did not serve /assets/style.0123456789abcdef.css"):
+        module._smoke_dashboard_assets(stub, tmp_path)
+
+    _assert_process_gone(pid_file)
+
+
+def test_smoke_dashboard_assets_rejects_a_page_without_content_named_assets(
+    tmp_path: Path,
+) -> None:
+    module = _load_script_module("smoke_factory", "scripts/release/smoke_factory.py")
+    stub, pid_file = _dashboard_stub(tmp_path, page=b'<script src="/assets/app.js"></script>')
+
+    with pytest.raises(SystemExit, match="page names no script and stylesheet"):
         module._smoke_dashboard_assets(stub, tmp_path)
 
     _assert_process_gone(pid_file)
