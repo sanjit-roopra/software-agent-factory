@@ -447,27 +447,27 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/compare":
             self._serve_compare(query, send_body)
             return
-        detail_match = _RUN_DETAIL_PATTERN.match(path)
-        if detail_match:
-            self._serve_run_detail(detail_match.group(1), send_body)
-            return
-        reason_match = _RUN_REASON_PATTERN.match(path)
-        if reason_match:
-            self._serve_run_reason(reason_match.group(1), query, send_body)
-            return
-        evidence_match = _RUN_EVIDENCE_PATTERN.match(path)
-        if evidence_match:
-            self._serve_run_evidence(evidence_match.group(1), evidence_match.group(2), send_body)
-            return
-        diff_match = _RUN_DIFF_PATTERN.match(path)
-        if diff_match:
-            self._serve_run_diff(diff_match.group(1), query, send_body)
+        if self._route_run(path, query, send_body):
             return
         if path == EVENTS_PATH:
             serve_events(self, self.server, (*_SECURITY_HEADERS, _NO_STORE), send_body)
             return
         status, payload = transcript_answer(self.server, path)
         self._respond_json(status, payload, send_body)
+
+    def _route_run(self, path: str, query: dict[str, list[str]], send_body: bool) -> bool:
+        """Serve one run's detail, reason, evidence or diff; False when no run route matches."""
+        if match := _RUN_DETAIL_PATTERN.match(path):
+            self._serve_run_detail(match.group(1), send_body)
+        elif match := _RUN_REASON_PATTERN.match(path):
+            self._serve_run_reason(match.group(1), query, send_body)
+        elif match := _RUN_EVIDENCE_PATTERN.match(path):
+            self._serve_run_evidence(match.group(1), match.group(2), send_body)
+        elif match := _RUN_DIFF_PATTERN.match(path):
+            self._serve_run_diff(match.group(1), query, send_body)
+        else:
+            return False
+        return True
 
     def _serve_index(
         self, send_body: bool, *, extra_headers: tuple[tuple[str, str], ...] = ()
