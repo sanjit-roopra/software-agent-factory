@@ -277,11 +277,11 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
 
 def test_the_run_list_keeps_a_fixed_layout_inside_its_card() -> None:
     css = dashboard_assets.STYLE_CSS
-    assert "#runs-table { table-layout: fixed; }" in css
+    assert "#runs-table { table-layout: fixed; min-width: 56rem; }" in css
     assert "#runs-table td { overflow: hidden; text-overflow: ellipsis; }" in css
     media = re.search(r"@media \(max-width: 1360px\) \{(.*?)\n\}", css, re.DOTALL)
     assert media is not None
-    assert "#runs-table th:nth-child(5) { width: 0; }" in media.group(1)
+    assert re.search(r"#runs-table th:nth-child\(5\), [^{]*\{\s*width: 0;", media.group(1))
 
 
 def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
