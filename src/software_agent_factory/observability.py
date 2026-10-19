@@ -882,12 +882,12 @@ def _is_stale(run: FactoryRun, now: datetime, stale_after: timedelta) -> bool:
     return (now - signal) > stale_after
 
 
-def _list_states(run: FactoryRun, now: datetime, stale_after: timedelta) -> tuple[str, ...]:
+def _list_states(run: FactoryRun, now: datetime, stale_after: timedelta) -> list[str]:
     """The run list states ``run`` is in: its class, and ``stuck`` too when active and stale."""
-    classification = _classify_run(run)
-    if classification == "active" and _is_stale(run, now, stale_after):
-        return (classification, "stuck")
-    return (classification,)
+    states = [_classify_run(run)]
+    if states[0] == "active" and _is_stale(run, now, stale_after):
+        states.append("stuck")
+    return states
 
 
 def _compute_state_counts(
