@@ -881,7 +881,7 @@ def test_a_call_row_wires_the_default_columns_from_the_call_fields() -> None:
     cells = function_source(dashboard_assets.APP_JS, "callCells")
     for wired in (
         "displayValue(call.invocation_number)",
-        "roleText(call.role)",
+        "stepSummary(call, verdict)",
         "modelText(call)",
         "callOutcome(call).text",
         "durationText(call.duration_ms)",

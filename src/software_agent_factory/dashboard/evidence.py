@@ -141,9 +141,22 @@ def _history(value: Any, run_id: str | None, ci: bool) -> list[dict[str, Any]]:
     return entries
 
 
+def _tester_history(value: Any) -> list[dict[str, Any]]:
+    """The AI tester's verdict per attempt: passed and skipped, nothing else."""
+    return [
+        {
+            "attempt": item["attempt"],
+            "passed": item.get("passed") is True,
+            "skipped": item.get("skipped") is True,
+        }
+        for item in _dicts(value)[-MAX_HISTORY:]
+        if is_positive_int(item.get("attempt"))
+    ]
+
+
 def sanitize_run_checks(raw: Any) -> dict[str, Any]:
     """The verification and CI checks of a run, each with its redacted output tail,
-    and the same per attempt for the attempt picker."""
+    the same per attempt for the attempt picker, and the tester's verdict per attempt."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
         raise TypeError(_NOT_AN_OBJECT)
@@ -153,6 +166,7 @@ def sanitize_run_checks(raw: Any) -> dict[str, Any]:
         "ci_checks": [_sanitize_ci_check(item, run_id) for item in _dicts(data.get("ci_checks"))],
         "verification_history": _history(data.get("verification_history"), run_id, ci=False),
         "ci_history": _history(data.get("ci_history"), run_id, ci=True),
+        "tester_history": _tester_history(data.get("tester_history")),
     }
 
 

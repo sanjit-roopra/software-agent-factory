@@ -298,6 +298,7 @@ def test_build_run_evidence_is_empty_without_artifacts_and_none_without_a_run(
         "ci_checks": [],
         "verification_history": [],
         "ci_history": [],
+        "tester_history": [],
         "review_rounds": [],
         "open_findings": [],
         "accepted_findings": [],

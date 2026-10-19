@@ -226,7 +226,7 @@
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
     baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null, recordReasons: {},
     evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
-    evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
+    evidence: { plan: null, diff: null, checks: null, review: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
     search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
     projectsListed: false, shownRuns: null, selectFirstRow: false
   };
@@ -2007,11 +2007,11 @@
     return FAILURE_LINKS.get(call.failure_link) || outcomeOf(call.status);
   }
 
-  function callCells(call) {
+  function callCells(call, verdict) {
     const usage = call.usage || {};
     return [
       displayValue(call.invocation_number),
-      roleText(call.role),
+      stepSummary(call, verdict),
       modelText(call),
       callOutcome(call).text,
       durationText(call.duration_ms),
@@ -2068,6 +2068,158 @@
       ? "latest " + lines.length + " of " + total
       : String(lines.length);
     return [["Tool calls (" + count + ")", lines.join("\n")]];
+  }
+
+  // ---- Run detail: what each step did --------------------------------------
+
+  // Tools that write a file. Their preview is the file path (transcripts.py).
+  const FILE_TOOLS = new Set(["edit", "multiedit", "write", "create", "notebookedit"]);
+
+  // The files a call wrote, each once, in the order it first wrote them.
+  function filesTouched(toolCalls) {
+    const paths = asArray(toolCalls).filter(function (tool) {
+      return FILE_TOOLS.has(String(tool.name).toLowerCase()) && Boolean(tool.preview);
+    }).map(function (tool) { return tool.preview; });
+    return Array.from(new Set(paths));
+  }
+
+  // The attempt a call worked on, as its place among all the run's attempts: the
+  // attempts/NN number that checks and review rounds use. It counts the attempts that
+  // had started when the call started. A call outside an attempt, such as triage, has none.
+  function attemptIndex(call, attempts) {
+    const begin = startMs(call);
+    if (!isFiniteNumber(call.attempt_number) || begin === null) {
+      return null;
+    }
+    const count = asArray(attempts).filter(function (attempt) {
+      return Date.parse(attempt.started_at) <= begin;
+    }).length;
+    return count > 0 ? count : null;
+  }
+
+  function entryFor(items, key, index) {
+    return asArray(items).find(function (item) { return item[key] === index; });
+  }
+
+  // What the reviewer or the tester decided about the attempt, from the saved reports.
+  function stepReviewVerdict(round) {
+    if (!round) {
+      return "";
+    }
+    if (round.skipped) {
+      return "review skipped";
+    }
+    return round.approved ? "approved" : "changes requested";
+  }
+
+  function stepTesterVerdict(result) {
+    if (!result) {
+      return "";
+    }
+    if (result.skipped) {
+      return "tester skipped";
+    }
+    return result.passed ? "tests passed" : "tests failed";
+  }
+
+  function stepVerdict(call, index, evidence) {
+    if (call.role === "REVIEWER") {
+      return stepReviewVerdict(entryFor(evidence.review?.rounds, "attempt_number", index));
+    }
+    if (call.role === "TESTER") {
+      return stepTesterVerdict(entryFor(evidence.checks?.tester_history, "attempt", index));
+    }
+    return "";
+  }
+
+  function stepSummary(call, verdict) {
+    return verdict ? roleText(call.role) + " \u00b7 " + verdict : roleText(call.role);
+  }
+
+  // "2 of 3 passed" for the verification checks the attempt saved.
+  function checksText(index, checks) {
+    const entry = entryFor(checks?.verification_history, "attempt", index);
+    const ran = asArray(entry?.checks);
+    if (ran.length === 0) {
+      return "";
+    }
+    const passed = ran.filter(function (check) { return check.passed === true; }).length;
+    return passed + " of " + ran.length + " passed";
+  }
+
+  // The files the call wrote, the checks of its attempt and the verdict on it.
+  function stepFields(call, index, evidence) {
+    const files = filesTouched(call.tool_calls);
+    const checks = checksText(index, evidence.checks);
+    const verdict = stepVerdict(call, index, evidence);
+    return [
+      ...(files.length > 0 ? [["Files touched (" + files.length + ")", files.join("\n")]] : []),
+      ...(checks ? [["Checks of attempt " + index, checks]] : []),
+      ...(verdict ? [["Verdict", verdict]] : [])
+    ];
+  }
+
+  // One small line icon per role, drawn in the text color.
+  const ROLE_ICONS = {
+    TRIAGE: "M2 3h12L9.5 8.5V13l-3 1V8.5z",
+    REFINER: "M3 13l1-3 7-7 2 2-7 7z",
+    PLANNER: "M6 4h8M6 8h8M6 12h8M2 4h1M2 8h1M2 12h1",
+    IMPLEMENTER: "M6 4L2 8l4 4M10 4l4 4-4 4",
+    TESTER: "M6 2h4M7 2v4l-4 7.5h10L9 6V2",
+    REVIEWER: "M1.5 8s2.5-4.5 6.5-4.5 6.5 4.5 6.5 4.5-2.5 4.5-6.5 4.5S1.5 8 1.5 8zM8 6.5v3"
+  };
+  const OTHER_ROLE_ICON = "M8 3a5 5 0 1 0 0 10A5 5 0 0 0 8 3z";
+
+  function roleIcon(role) {
+    const svg = document.createElementNS(SVG_NS, "svg");
+    svg.setAttribute("class", "role-icon");
+    svg.setAttribute("viewBox", "0 0 16 16");
+    svg.setAttribute("aria-hidden", "true");
+    const path = svg.appendChild(document.createElementNS(SVG_NS, "path"));
+    path.setAttribute("d", ROLE_ICONS[role] || OTHER_ROLE_ICON);
+    return svg;
+  }
+
+  // The role cell: the role's icon, then the summary text.
+  function patchRoleText(node, role, text) {
+    if (node.dataset.role !== String(role)) {
+      node.dataset.role = String(role);
+      node.replaceChildren(roleIcon(role), document.createTextNode(""));
+    }
+    node.lastChild.data = text;
+  }
+
+  // The reduced view shows one line per call; "Show all detail" shows every column.
+  const STEPS_DETAIL_KEY = "factory-dashboard-steps-detail";
+
+  function readStepsDetail() {
+    try {
+      return globalThis.localStorage.getItem(STEPS_DETAIL_KEY) === "full";
+    } catch {
+      // Storage is blocked, so the reduced view shows.
+      return false;
+    }
+  }
+
+  function showStepsDetail(full) {
+    document.getElementById("timeline-table").classList.toggle("timeline-reduced", !full);
+    const button = document.getElementById("steps-view-toggle");
+    button.setAttribute("aria-pressed", String(full));
+    setText(button, full ? "Show less detail" : "Show all detail");
+  }
+
+  function storeStepsDetail(full) {
+    try {
+      globalThis.localStorage.setItem(STEPS_DETAIL_KEY, full ? "full" : "reduced");
+    } catch {
+      // Storage is blocked: the choice lasts for this page view only.
+    }
+  }
+
+  function toggleStepsDetail() {
+    const full = document.getElementById("timeline-table").classList.contains("timeline-reduced");
+    showStepsDetail(full);
+    storeStepsDetail(full);
   }
 
   // ---- Run detail: step tags, runtime chips and the duration bar ----------
@@ -2283,7 +2435,7 @@
 
   // The same rows are reused for the same call, so an open call stays open across a
   // refresh. A different call in the slot starts closed.
-  function patchCall(row, call, runId, scale) {
+  function patchCall(row, call, runId, scale, attempts) {
     const key = runId + "/" + displayValue(call.invocation_number);
     if (row.dataset.call !== key) {
       row.dataset.call = key;
@@ -2291,10 +2443,17 @@
       resetTranscript(row.nextElementSibling.firstElementChild.lastElementChild, runId,
         call.invocation_number);
     }
-    const [number, ...columns] = callCells(call);
+    const index = attemptIndex(call, attempts);
+    const evidence = state.evidence;
+    const [number, ...columns] = callCells(call, stepVerdict(call, index, evidence));
     setText(row.firstElementChild.firstElementChild.lastElementChild, number);
-    for (const [index, text] of columns.entries()) {
-      setText(row.children[index + 1].firstElementChild, text);
+    for (const [column, text] of columns.entries()) {
+      const node = row.children[column + 1].firstElementChild;
+      if (column + 1 === ROLE_CELL) {
+        patchRoleText(node, call.role, text);
+      } else {
+        setText(node, text);
+      }
     }
     setTitle(row.lastElementChild, costTitle(call.usage || {}));
     patchStepExtras(row, call, scale);
@@ -2303,7 +2462,9 @@
     const fields = row.nextElementSibling.firstElementChild.firstElementChild;
     const query = "call=" + call.invocation_number;
     const reason = recordReason(runId, query, call.failure_reason, call.failure_reason_truncated);
-    syncDefinitionList(fields, callFieldsWithReason(call, runId, reason));
+    syncDefinitionList(fields, [
+      ...stepFields(call, index, evidence), ...callFieldsWithReason(call, runId, reason)
+    ]);
     syncReasonButton(fields.nextElementSibling, reason);
   }
 
@@ -2353,7 +2514,7 @@
     trimChildren(body, calls.length * ROWS_PER_CALL);
     const scale = stepScale(calls);
     for (const [index, call] of calls.entries()) {
-      patchCall(callAt(body, index), call, runId, scale);
+      patchCall(callAt(body, index), call, runId, scale, detail.attempts);
     }
     patchTotalRow(document.getElementById("timeline-total"), detail.totals || {});
     document.getElementById("timeline-status").hidden = calls.length > 0;
@@ -4080,6 +4241,10 @@
       return;
     }
     state.evidenceDrawn[kind] = key;
+    // The Steps list joins the checks and review answers, so it changes with them.
+    if (keep && state.runDetail) {
+      renderTimeline(state.runDetail, runId);
+    }
     const body = document.getElementById(kind + "-body");
     clearChildren(body);
     const shown = payload !== null && EVIDENCE_RENDERERS[kind](body, payload);
@@ -4596,7 +4761,7 @@
       state.checksAttempt = null;
       state.diffKey = null;
       state.runDetail = null;
-      state.evidence = { plan: null, diff: null };
+      state.evidence = { plan: null, diff: null, checks: null, review: null };
       state.recordReasons = {};
     }
     state.runId = runId;
@@ -5092,6 +5257,8 @@
     document.getElementById("runs-next").addEventListener("click", function () {
       goToOffset(state.offset + state.limit);
     });
+    document.getElementById("steps-view-toggle").addEventListener("click", toggleStepsDetail);
+    showStepsDetail(readStepsDetail());
     document.getElementById("theme-toggle").addEventListener("click", function () {
       const next = otherTheme(currentTheme());
       applyTheme(next);

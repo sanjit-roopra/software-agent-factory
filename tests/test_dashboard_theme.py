@@ -219,20 +219,30 @@ def test_the_theme_is_stored_under_one_key() -> None:
     assert 'const THEME_STORAGE_KEY = "factory-dashboard-theme";' in dashboard_assets.APP_JS
 
 
-@pytest.mark.parametrize(
-    ("call", "function"), list(zip(STORAGE_CALLS, ("readStoredTheme", "storeTheme")))
+#: Each storage call: the function that makes it and the key it uses. The theme and
+#: the Steps view (reduced or full) are the only things the page remembers.
+STORAGE_FUNCTIONS = (
+    ("getItem", "readStoredTheme", "THEME_STORAGE_KEY"),
+    ("setItem", "storeTheme", "THEME_STORAGE_KEY"),
+    ("getItem", "readStepsDetail", "STEPS_DETAIL_KEY"),
+    ("setItem", "storeStepsDetail", "STEPS_DETAIL_KEY"),
 )
-def test_each_local_storage_call_sits_inside_try_catch(call: str, function: str) -> None:
+
+
+@pytest.mark.parametrize(("call", "function", "key"), STORAGE_FUNCTIONS)
+def test_each_local_storage_call_sits_inside_try_catch(call: str, function: str, key: str) -> None:
     source = function_source(dashboard_assets.APP_JS, function)
     assert re.fullmatch(
-        rf"function {function}\([^)]*\) \{{ try \{{.*localStorage\.{call}\(THEME_STORAGE_KEY.*\}} "
+        rf"function {function}\([^)]*\) \{{ try \{{.*localStorage\.{call}\({key}.*\}} "
         r"catch \{.*\} \}",
         source,
     )
 
 
 def test_local_storage_is_touched_only_by_the_listed_calls() -> None:
-    assert strip_comments(dashboard_assets.APP_JS).count("localStorage.") == len(STORAGE_CALLS)
+    js = strip_comments(dashboard_assets.APP_JS)
+    assert js.count("localStorage.") == len(STORAGE_FUNCTIONS)
+    assert {call for call, _, _ in STORAGE_FUNCTIONS} == set(STORAGE_CALLS)
 
 
 def test_a_blocked_or_unreadable_store_means_no_remembered_theme() -> None:

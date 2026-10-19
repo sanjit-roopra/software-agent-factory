@@ -473,6 +473,12 @@ the runtime that served the call. A "fell back" chip means the first runtime was
 to serve it. Its tooltip gives the reason. Open a call to see the tools it used, one line
 each, read from its stored transcript.
 
+The steps start in a short view: one line per call with a role icon, the role, the
+outcome and the duration bar. A reviewer line adds the review verdict, and a tester line
+adds the tester result. "Show all detail" adds the model, tokens, cost and totals, and the
+page remembers the choice in this browser. An open call also lists the files it wrote,
+the checks of its attempt and the verdict on that attempt (ADR-066).
+
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
 generated for that process. It answers `GET` for reads. Six `POST` routes are the
 only writes: approve a halt, answer plan decisions (ADR-033), retry

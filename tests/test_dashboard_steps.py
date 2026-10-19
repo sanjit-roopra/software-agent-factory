@@ -106,3 +106,103 @@ def test_a_hidden_duration_bar_is_not_drawn() -> None:
 def test_step_chips_do_not_replace_the_link_cell_chips() -> None:
     assert len(re.findall(r"function syncChips\(", _JS)) == 1
     assert "function syncStepChips(container, chips)" in _JS
+
+
+# What each step did: files, checks and verdict joined from the attempt records.
+
+_ATTEMPTS = [
+    {"attempt_number": 1, "started_at": "2026-09-10T13:21:30.562Z"},
+    {"attempt_number": 2, "started_at": "2026-09-10T13:37:13.336Z"},
+]
+_EVIDENCE = {
+    "review": {"rounds": [{"attempt_number": 2, "approved": False, "skipped": False}]},
+    "checks": {
+        "verification_history": [
+            {"attempt": 2, "checks": [{"passed": True}, {"passed": False}, {"passed": True}]}
+        ],
+        "tester_history": [{"attempt": 2, "passed": True, "skipped": False}],
+    },
+}
+
+
+def _call(role: str, started_at: str, attempt: int | None = 1, **extra: Any) -> dict[str, Any]:
+    return {"role": role, "started_at": started_at, "attempt_number": attempt, **extra}
+
+
+def test_the_attempt_of_a_call_is_the_count_of_attempts_started_before_it() -> None:
+    planner = _call("PLANNER", "2026-09-10T13:20:14Z")
+    first = _call("IMPLEMENTER", "2026-09-10T13:21:30.562Z")
+    reviewer = _call("REVIEWER", "2026-09-10T13:42:40Z", 2)
+    triage = _call("TRIAGE", "2026-09-10T13:50:00Z", None)
+
+    assert _values(
+        *(JsCall("attemptIndex", (call, _ATTEMPTS)) for call in (planner, first, reviewer, triage))
+    ) == [None, 1, 2, None]
+
+
+def test_files_touched_are_the_written_paths_once_each_in_order() -> None:
+    tools = [
+        {"name": "Read", "preview": "a.py"},
+        {"name": "Edit", "preview": "b.py"},
+        {"name": "write", "preview": "c.py"},
+        {"name": "MultiEdit", "preview": "b.py"},
+        {"name": "Edit", "preview": ""},
+        {"name": "Bash", "preview": "pytest -q"},
+    ]
+
+    assert _values(JsCall("filesTouched", (tools,)), JsCall("filesTouched", (None,))) == [
+        ["b.py", "c.py"],
+        [],
+    ]
+
+
+def test_the_verdict_comes_from_the_review_round_or_tester_report_of_the_attempt() -> None:
+    reviewer = _call("REVIEWER", "2026-09-10T13:42:40Z", 2)
+    tester = _call("TESTER", "2026-09-10T13:39:16Z", 2)
+    approved = {"review": {"rounds": [{"attempt_number": 2, "approved": True}]}}
+    skipped = {"checks": {"tester_history": [{"attempt": 2, "skipped": True}]}}
+
+    assert _values(
+        JsCall("stepVerdict", (reviewer, 2, _EVIDENCE)),
+        JsCall("stepVerdict", (reviewer, 2, approved)),
+        JsCall("stepVerdict", (reviewer, 1, _EVIDENCE)),
+        JsCall("stepVerdict", (tester, 2, _EVIDENCE)),
+        JsCall("stepVerdict", (tester, 2, skipped)),
+        JsCall("stepVerdict", (_call("IMPLEMENTER", ""), 2, _EVIDENCE)),
+        JsCall("stepVerdict", (reviewer, 2, {"review": None, "checks": None})),
+    ) == ["changes requested", "approved", "", "tests passed", "tester skipped", "", ""]
+
+
+def test_the_reduced_line_names_the_role_and_its_verdict() -> None:
+    reviewer = _call("REVIEWER", "")
+
+    assert _values(
+        JsCall("stepSummary", (reviewer, "approved")),
+        JsCall("stepSummary", (reviewer, "")),
+    ) == ["Reviewer · approved", "Reviewer"]
+
+
+def test_the_expanded_step_lists_files_checks_and_verdict() -> None:
+    reviewer = _call(
+        "REVIEWER", "2026-09-10T13:42:40Z", 2, tool_calls=[{"name": "Edit", "preview": "a.py"}]
+    )
+
+    assert _values(
+        JsCall("stepFields", (reviewer, 2, _EVIDENCE)),
+        JsCall("stepFields", (_call("TRIAGE", ""), None, _EVIDENCE)),
+    ) == [
+        [
+            ["Files touched (1)", "a.py"],
+            ["Checks of attempt 2", "2 of 3 passed"],
+            ["Verdict", "changes requested"],
+        ],
+        [],
+    ]
+
+
+def test_the_steps_view_is_reduced_until_a_person_asks_for_all_detail() -> None:
+    page = dashboard_assets.render_index_html(token="fixture-token")
+    assert 'const STEPS_DETAIL_KEY = "factory-dashboard-steps-detail";' in _JS
+    assert '=== "full"' in function_source(_JS, "readStepsDetail")
+    assert "showStepsDetail(readStepsDetail())" in _JS
+    assert 'id="steps-view-toggle" type="button" aria-pressed="false"' in page
