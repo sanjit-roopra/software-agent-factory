@@ -113,6 +113,7 @@
   const COPY_FAILED_TEXT = "Copy failed, select the text and copy it.";
   const COPIED_VISIBLE_MS = 2000;
   const MS_PER_SECOND = 1000;
+  const TIMEOUT_WARN_SHARE = 0.8;
   // How often a running timer on the page moves on between polls.
   const TICK_INTERVAL_MS = MS_PER_SECOND;
   const SECONDS_PER_MINUTE = 60;
@@ -3340,6 +3341,20 @@
     };
   }
 
+  // The time limit of the running call, a warning once 80% of it has passed.
+  function timeoutPart(active, nowMs) {
+    const limitMs = Number(active.timeout_seconds) * MS_PER_SECOND;
+    if (!Number.isFinite(limitMs) || limitMs <= 0) {
+      return null;
+    }
+    const late = nowMs - Date.parse(active.started_at) >= TIMEOUT_WARN_SHARE * limitMs;
+    return {
+      text: "/ timeout " + durationText(limitMs),
+      title: late ? "Over 80% of the call time limit has passed" : "The call stops at this limit",
+      className: late ? "status-warn" : ""
+    };
+  }
+
   // The running timers of an active run: since its start, in its stage and in its
   // active call, then the idle time. A stopped run says how long it took.
   function timeParts(detail, nowMs) {
@@ -3355,6 +3370,10 @@
     if (isPlainObject(active) && typeof active.started_at === "string") {
       const role = displayValue(active.role, "active").toLowerCase();
       parts.push(tickPart(role + " call ", active.started_at, nowMs));
+      const limit = timeoutPart(active, nowMs);
+      if (limit !== null) {
+        parts.push(limit);
+      }
     }
     const tools = isPlainObject(active) ? liveToolPart(active) : null;
     if (tools !== null) {

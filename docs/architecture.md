@@ -228,7 +228,7 @@ seconds, so long work does not look stalled (`run_watch.py`). During an agent ca
 writes a beat only when the agent printed a line or started a tool since the last beat.
 So a silent agent looks stalled (ADR-048). Each runtime (pi, Claude Code and Copilot) reports each tool
 call as it starts. Claude Code and Copilot stamp `last_output_at` on each line they print, and pi on each event. The controller keeps the latest 20 on `active_invocation`, with a
-count of all of them, so the dashboard shows a live tail of the call (ADR-052). A stalled run is stopped for real and halts as `STALLED`, or continues
+count of all of them, so the dashboard shows a live tail of the call (ADR-052). The active call also keeps its time limit, `timeout_seconds`, so the dashboard shows it next to the call timer (ADR-063). A stalled run is stopped for real and halts as `STALLED`, or continues
 if it is unattended (ADR-048).
 
 Delivery records `base_commit_sha`, `reviewed_tree_sha` and

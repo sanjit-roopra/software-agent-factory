@@ -1,5 +1,27 @@
 # Architecture Decisions
 
+## ADR-063: Show the call time limit next to the call timer
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The run page counts up the time of the running agent call.
+It did not show the time limit of the call, because the run file did not keep the limit.
+The operator did not know if a long call was close to its timeout.
+
+### Decision
+
+- `active_invocation` keeps `timeout_seconds`, the limit the controller gives the runtime for that call.
+- The run detail API sends it with the active call. A missing or bad value is sent as `null`.
+- The status line shows `/ timeout 15 min 0 s` after the call timer.
+  After 80% of the limit, the text uses the warning color.
+
+### Consequences
+
+- The operator sees how close a call is to its timeout without reading the configuration.
+- A run file written before this change has no limit, and the page shows no limit for it.
+
 ## ADR-062: The dashboard can show a full attempt or call failure reason
 
 Status: accepted on 2026-10-19. This amends ADR-046.
