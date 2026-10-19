@@ -30,6 +30,14 @@ COST_INFO = (
 )
 
 
+def sort_button(key: str, label: str) -> str:
+    """A run list heading button that sorts by ``key``; the page adds the arrow to ``label``."""
+    return (
+        f'<button class="sort-button" type="button" data-sort="{key}" '
+        f'data-label="{label}">{label}</button>'
+    )
+
+
 def render_index_html(*, token: str) -> str:
     """Render the single static page. ``token`` is a server-generated value,
     never user input, so embedding it directly as an attribute is safe.
@@ -146,17 +154,15 @@ def render_index_html(*, token: str) -> str:
           <table id="runs-table">
             <thead>
               <tr>
-                <th scope="col">Title</th>
-                <th scope="col">State</th>
+                <th scope="col">{sort_button("title", "Title")}</th>
+                <th scope="col">{sort_button("state", "State")}</th>
                 <th scope="col">Why</th>
                 <th scope="col">PR</th>
                 <th scope="col">Calls</th>
-                <th scope="col">Duration</th>
+                <th scope="col">{sort_button("duration", "Duration")}</th>
                 <th scope="col">Tokens</th>
-                <th scope="col">Cost {COST_INFO}</th>
-                <th id="runs-started-head" scope="col" aria-sort="descending">
-                  <button id="runs-sort" class="sort-button" type="button">Started</button>
-                </th>
+                <th scope="col">{sort_button("cost", "Cost")} {COST_INFO}</th>
+                <th scope="col" aria-sort="descending">{sort_button("started", "Started")}</th>
                 <th scope="col"><span class="visually-hidden">Compare</span></th>
               </tr>
             </thead>
@@ -420,8 +426,8 @@ def render_index_html(*, token: str) -> str:
     <dt><kbd>g</kbd> <kbd>h</kbd></dt><dd>Health</dd>
     <dt><kbd>j</kbd> <kbd>k</kbd></dt><dd>Next or previous run in the list</dd>
     <dt><kbd>Enter</kbd></dt><dd>Open the chosen run</dd>
-    <dt><kbd>n</kbd></dt><dd>Next run that needs you</dd>
-    <dt><kbd>f</kbd></dt><dd>Next failed run</dd>
+    <dt><kbd>n</kbd></dt><dd>Next run that needs you, then the list of them</dd>
+    <dt><kbd>f</kbd></dt><dd>Next failed run, then the list of them</dd>
     <dt><kbd>/</kbd></dt><dd>Search runs</dd>
     <dt><kbd>r</kbd></dt><dd>Refresh now</dd>
     <dt><kbd>?</kbd></dt><dd>Show this list</dd>

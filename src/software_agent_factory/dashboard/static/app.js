@@ -59,6 +59,16 @@
   const MAX_SEARCH_LENGTH = 100;
   const PROJECT_ID_PATTERN = /^[A-Za-z0-9._-]{1,80}$/;
   const SORT_OLDEST = "oldest";
+  // RUN_LIST_SORT_KEYS in project_models.py: a key sorts low to high, "-" and a key high to
+  // low. The Started column sorts newest first ("") or oldest first.
+  const SORT_KEYS = ["title", "state", "duration", "cost"];
+  const SORTS = new Set([SORT_OLDEST, ...SORT_KEYS, ...SORT_KEYS.map(function (key) {
+    return "-" + key;
+  })]);
+  const SORT_STARTED = "started";
+  // A first click sorts these high to low; text sorts from A.
+  const SORT_HIGH_FIRST = new Set(["duration", "cost"]);
+  const SORT_ARROWS = { ascending: " \u2191", descending: " \u2193" };
   const EMPTY_SEARCH = { q: "", state: "", project: "", sort: "" };
   // Typing waits this long before the list asks the server again.
   const SEARCH_DELAY_MS = 300;
@@ -218,7 +228,7 @@
     evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
     evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
     search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
-    projectsListed: false, shownRuns: null
+    projectsListed: false, shownRuns: null, selectFirstRow: false
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -1433,7 +1443,9 @@
     document.getElementById("runs-filter").hidden = filter === null;
     document.getElementById("runs-toolbar").hidden = filter !== null;
     document.getElementById("runs-search-bar").hidden = filter !== null;
-    document.getElementById("runs-sort").disabled = filter !== null;
+    for (const button of sortButtons()) {
+      button.disabled = filter !== null;
+    }
     document.getElementById("runs-filter-name").textContent =
       filter === FILTER_ACTIVE ? "active runs" : "runs that need you";
   }
@@ -1448,6 +1460,11 @@
       runListSpecs(runs, request.filter, nowMs, state.needsYouCount)
     );
     markSelectedRow();
+    if (state.selectFirstRow) {
+      state.selectFirstRow = false;
+      const rows = runRows();
+      selectRowAt(rows, steppedIndex(rows.length, -1, 1));
+    }
     renderRunsPager(payload.page || {}, runs.length, request);
     renderRunsStatus(runs.length, request);
     renderRunsFilter(request.filter);
@@ -4363,7 +4380,7 @@
       q: (params.get("q") ?? "").trim().slice(0, MAX_SEARCH_LENGTH),
       state: RUN_STATES.has(runState) ? runState : "",
       project: PROJECT_ID_PATTERN.test(project) ? project : "",
-      sort: params.get("sort") === SORT_OLDEST ? SORT_OLDEST : ""
+      sort: SORTS.has(params.get("sort")) ? params.get("sort") : ""
     };
   }
 
@@ -4690,11 +4707,49 @@
     setControlValue("runs-search", search.q);
     setControlValue("runs-state", search.state);
     setControlValue("runs-project", search.project);
-    const oldest = search.sort === SORT_OLDEST;
-    document.getElementById("runs-started-head").setAttribute(
-      "aria-sort", oldest ? "ascending" : "descending"
-    );
-    document.getElementById("runs-sort").textContent = oldest ? "Started \u2191" : "Started \u2193";
+    for (const button of sortButtons()) {
+      const direction = columnSort(search.sort, button.dataset.sort);
+      const head = button.closest("th");
+      if (direction === null) {
+        head.removeAttribute("aria-sort");
+      } else {
+        head.setAttribute("aria-sort", direction);
+      }
+      button.textContent = button.dataset.label + (SORT_ARROWS[direction] ?? "");
+    }
+  }
+
+  function sortButtons() {
+    return document.querySelectorAll("#runs-table .sort-button");
+  }
+
+  // How the column sorted by key reads under sort: ascending, descending or null.
+  function columnSort(sort, key) {
+    if (key === SORT_STARTED) {
+      if (sort === "") {
+        return "descending";
+      }
+      return sort === SORT_OLDEST ? "ascending" : null;
+    }
+    if (sort === key) {
+      return "ascending";
+    }
+    return sort === "-" + key ? "descending" : null;
+  }
+
+  // The sort a click on a column asks for: the other way when the list is sorted by it,
+  // else its first way.
+  function clickedSort(sort, key) {
+    if (key === SORT_STARTED) {
+      return sort === "" ? SORT_OLDEST : "";
+    }
+    if (sort === key) {
+      return "-" + key;
+    }
+    if (sort === "-" + key) {
+      return key;
+    }
+    return SORT_HIGH_FIRST.has(key) ? "-" + key : key;
   }
 
   // The project picker lists the projects once per page load. A failed load tries again
@@ -4726,8 +4781,8 @@
     }, SEARCH_DELAY_MS);
   }
 
-  function toggleSort() {
-    const sort = state.search.sort === SORT_OLDEST ? "" : SORT_OLDEST;
+  function onSortClick(event) {
+    const sort = clickedSort(state.search.sort, event.currentTarget.dataset.sort);
     navigateRuns({ ...state.search, sort: sort }, 0);
   }
 
@@ -4744,7 +4799,9 @@
         navigateRuns(readSearch(), 0);
       });
     }
-    document.getElementById("runs-sort").addEventListener("click", toggleSort);
+    for (const button of sortButtons()) {
+      button.addEventListener("click", onSortClick);
+    }
   }
 
   // ---- Run detail tabs ---------------------------------------------------
@@ -4858,10 +4915,50 @@
     return selectRowAt(rows, steppedIndex(rows.length, selectedIndex(rows), step));
   }
 
-  function jumpToRow(className) {
+  // Where n or f goes: the next matching row below the chosen one, else the list that holds
+  // only such runs, else (on that list already) its next page, else round to its first row.
+  function jumpTarget(matches, current, onList, hasMore) {
+    const next = matches.findIndex(function (match, index) { return match && index > current; });
+    if (next >= 0) {
+      return { index: next };
+    }
+    if (!onList) {
+      return { go: "list" };
+    }
+    return hasMore ? { go: "next-page" } : { index: nextMatchIndex(matches, current) };
+  }
+
+  // n and f: the row class each jumps to, and the list that holds only those runs.
+  const JUMPS = {
+    "needs-you": {
+      className: "row-needs_you",
+      onList: function () { return state.filter === FILTER_NEEDS_YOU; },
+      hash: function () { return "#runs?filter=" + FILTER_NEEDS_YOU; }
+    },
+    failure: {
+      className: "row-failed",
+      onList: function () { return state.filter === null && state.search.state === "failed"; },
+      hash: function () { return runsHash({ ...EMPTY_SEARCH, state: "failed" }, 0); }
+    }
+  };
+
+  function jumpToRow(name) {
+    const jump = JUMPS[name];
     const rows = runRows();
-    const matches = rows.map(function (row) { return row.classList.contains(className); });
-    return selectRowAt(rows, nextMatchIndex(matches, selectedIndex(rows)));
+    const matches = rows.map(function (row) { return row.classList.contains(jump.className); });
+    const hasMore = state.filter === null && !document.getElementById("runs-next").disabled;
+    const target = jumpTarget(matches, selectedIndex(rows), jump.onList(), hasMore);
+    if (target.go === undefined) {
+      return selectRowAt(rows, target.index);
+    }
+    state.selectFirstRow = true;
+    if (target.go === "next-page") {
+      goToOffset(state.offset + state.limit);
+    } else {
+      globalThis.history.pushState(null, "", jump.hash());
+      applyRoute(false);
+    }
+    return true;
   }
 
   function openSelectedRow() {
@@ -4898,8 +4995,8 @@
     next: onRunsView(function () { return moveRow(1); }),
     previous: onRunsView(function () { return moveRow(-1); }),
     open: onRunsView(openSelectedRow),
-    "needs-you": onRunsView(function () { return jumpToRow("row-needs_you"); }),
-    failure: onRunsView(function () { return jumpToRow("row-failed"); }),
+    "needs-you": onRunsView(function () { return jumpToRow("needs-you"); }),
+    failure: onRunsView(function () { return jumpToRow("failure"); }),
     search: onRunsView(focusSearch),
     refresh: function () {
       void refreshView();

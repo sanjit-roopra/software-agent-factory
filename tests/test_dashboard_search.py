@@ -89,7 +89,9 @@ def test_the_filter_narrows_and_orders_the_page_but_not_the_counts(tmp_path: Pat
     assert _ids(store, RunListFilter(state="succeeded")) == ["run-c"]
     assert _ids(store, RunListFilter(project_id="beta")) == ["run-c"]
     assert _ids(store, RunListFilter(text="login", project_id="alpha")) == ["run-a"]
-    assert _ids(store, RunListFilter(oldest_first=True)) == ["run-c", "run-b", "run-a"]
+    assert _ids(store, RunListFilter(sort="oldest")) == ["run-c", "run-b", "run-a"]
+    assert _ids(store, RunListFilter(sort="title")) == ["run-b", "run-a", "run-c"]
+    assert _ids(store, RunListFilter(text="login", sort="-title")) == ["run-c", "run-a"]
     assert _ids(store, RunListFilter(text="nothing like it")) == []
 
     snapshot = build_monitoring_snapshot(store, now=T0, run_filter=RunListFilter(state="failed"))
@@ -127,13 +129,18 @@ def test_parse_run_filter_reads_the_query_and_refuses_what_it_cannot_take() -> N
     assert parse_run_filter({}) == RunListFilter()
     assert parse_run_filter(
         {"q": ["  login "], "state": ["failed"], "project": ["alpha"], "sort": ["oldest"]}
-    ) == RunListFilter("login", "failed", "alpha", True)
+    ) == RunListFilter("login", "failed", "alpha", "oldest")
     assert parse_run_filter({"q": ["   "], "sort": ["newest"]}) == RunListFilter()
+    for sort in ("duration", "-duration", "cost", "-cost", "state", "-state", "title", "-title"):
+        assert parse_run_filter({"sort": [sort]}) == RunListFilter(sort=sort)
     for bad in (
         {"q": ["x" * (MAX_SEARCH_LENGTH + 1)]},
         {"state": ["stalled"]},
         {"project": ["../etc"]},
         {"sort": ["random"]},
+        {"sort": ["--cost"]},
+        {"sort": ["-newest"]},
+        {"sort": ["Title"]},
     ):
         assert parse_run_filter(bad) is None
     assert RUN_LIST_STATES == {"escalated", "failed", "succeeded", "active", "stuck"}
@@ -180,11 +187,13 @@ def test_api_runs_passes_a_filter_only_when_one_is_asked_for(
 
     assert seen == [
         {"limit": 5, "offset": 0},
-        {"limit": 20, "offset": 0, "filters": RunListFilter("login", "failed", "alpha", True)},
+        {"limit": 20, "offset": 0, "filters": RunListFilter("login", "failed", "alpha", "oldest")},
     ]
 
 
-@pytest.mark.parametrize("query", ["state=stalled", "sort=up", "project=a%2Fb", "q=" + "x" * 101])
+@pytest.mark.parametrize(
+    "query", ["state=stalled", "sort=up", "sort=-oldest", "project=a%2Fb", "q=" + "x" * 101]
+)
 def test_api_runs_refuses_a_filter_it_cannot_take(
     server: tuple[DashboardServer, list[dict[str, Any]]], query: str
 ) -> None:
@@ -259,6 +268,82 @@ def test_row_steps_stay_in_the_list_and_jumps_wrap_round() -> None:
         JsCall("nextMatchIndex", ([False, True], -1)),
         JsCall("nextMatchIndex", ([False, False], 0)),
     ) == [-1, 0, 2, 2, 0, 3, 1, 1, -1]
+
+
+def test_a_hash_keeps_only_a_sort_the_server_takes() -> None:
+    assert _values(
+        JsCall("routeSearch", ("sort=-cost",)),
+        JsCall("routeSearch", ("sort=title",)),
+        JsCall("routeSearch", ("sort=newest",)),
+        JsCall("routeSearch", ("sort=-oldest",)),
+    ) == [
+        {"q": "", "state": "", "project": "", "sort": "-cost"},
+        {"q": "", "state": "", "project": "", "sort": "title"},
+        {"q": "", "state": "", "project": "", "sort": ""},
+        {"q": "", "state": "", "project": "", "sort": ""},
+    ]
+
+
+def test_a_heading_reads_its_sort_and_a_click_flips_it() -> None:
+    assert _values(
+        JsCall("columnSort", ("", "started")),
+        JsCall("columnSort", ("oldest", "started")),
+        JsCall("columnSort", ("-cost", "started")),
+        JsCall("columnSort", ("-cost", "cost")),
+        JsCall("columnSort", ("cost", "cost")),
+        JsCall("columnSort", ("cost", "title")),
+        JsCall("clickedSort", ("", "started")),
+        JsCall("clickedSort", ("oldest", "started")),
+        JsCall("clickedSort", ("-cost", "started")),
+        JsCall("clickedSort", ("", "cost")),
+        JsCall("clickedSort", ("", "duration")),
+        JsCall("clickedSort", ("", "title")),
+        JsCall("clickedSort", ("title", "title")),
+        JsCall("clickedSort", ("-title", "title")),
+        JsCall("clickedSort", ("-cost", "state")),
+    ) == [
+        "descending",
+        "ascending",
+        None,
+        "descending",
+        "ascending",
+        None,
+        "oldest",
+        "",
+        "",
+        "-cost",
+        "-duration",
+        "title",
+        "-title",
+        "title",
+        "state",
+    ]
+
+
+def test_n_and_f_go_down_the_page_then_to_the_list_then_its_next_page() -> None:
+    page = [False, True, False, True]
+    assert _values(
+        JsCall("jumpTarget", (page, -1, False, False)),
+        JsCall("jumpTarget", (page, 1, False, True)),
+        JsCall("jumpTarget", (page, 3, False, False)),
+        JsCall("jumpTarget", ([True, True], 1, True, True)),
+        JsCall("jumpTarget", ([True, True], 1, True, False)),
+        JsCall("jumpTarget", ([], -1, True, False)),
+    ) == [
+        {"index": 1},
+        {"index": 3},
+        {"go": "list"},
+        {"go": "next-page"},
+        {"index": 0},
+        {"index": -1},
+    ]
+
+
+def test_a_jump_off_the_page_selects_the_first_row_when_the_list_loads() -> None:
+    jump = function_source(_JS, "jumpToRow")
+    assert "state.selectFirstRow = true;" in jump
+    assert "goToOffset(state.offset + state.limit);" in jump
+    assert "if (state.selectFirstRow) {" in function_source(_JS, "renderRuns")
 
 
 def test_keys_leave_fields_and_modifiers_to_the_browser() -> None:

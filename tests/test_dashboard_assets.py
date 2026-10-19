@@ -1713,7 +1713,7 @@ def test_a_run_state_is_a_badge_that_is_text_and_not_only_color() -> None:
     ):
         assert re.search(rf"\.badge-{kind}\s*\{{[^}}]*color:\s*var\(--{token}\);", css)
     assert re.search(r"\.badge\s*\{[^}]*font-weight:\s*700;", css)
-    assert '<th scope="col">State</th>' in _RUNS_HTML
+    assert 'data-sort="state" data-label="State">State</button></th>' in _RUNS_HTML
 
 
 def test_the_badge_kinds_match_the_server_outcome_kinds() -> None:
@@ -1733,7 +1733,7 @@ def test_the_run_list_columns_are_the_overview_columns_in_order() -> None:
         "Calls",
         "Duration",
         "Tokens",
-        "Cost ",
+        "Cost",
         "Started",
         "Compare",
     ]
@@ -1854,7 +1854,7 @@ def test_a_filter_shows_its_own_line_and_a_way_back_and_hides_the_pager() -> Non
         'document.getElementById("runs-filter").hidden = filter === null; '
         'document.getElementById("runs-toolbar").hidden = filter !== null; '
         'document.getElementById("runs-search-bar").hidden = filter !== null; '
-        'document.getElementById("runs-sort").disabled = filter !== null; '
+        "for (const button of sortButtons()) { button.disabled = filter !== null; } "
         'document.getElementById("runs-filter-name").textContent = '
         'filter === FILTER_ACTIVE ? "active runs" : "runs that need you"; }'
     )

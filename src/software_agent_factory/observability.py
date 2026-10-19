@@ -35,19 +35,12 @@ the caller-supplied ``now``/``stale_after`` on every call, and
 during *this* call. Nothing here mutates a run, a workspace, or
 configuration.
 
-Bounded work per request: run *directory* enumeration (a filesystem
-``iterdir``/``stat`` pass) may be broad -- it is only ever cheap metadata,
-never a JSON parse -- but the number of ``run.json`` files actually opened
-and parsed per call is hard-capped by ``max_scanned_runs`` (default
-:data:`DEFAULT_MAX_SCANNED_RUNS`). When a store holds more run directories
-than the cap, the newest ones (by ``run.json`` modification time, falling
-back to directory modification time) are preferred, and the snapshot says so
-honestly via ``scanned_runs``/``scan_truncated``/``degraded_reasons`` rather
-than silently reporting store-wide counts that quietly exclude older runs.
+Bounded work per request: listing run directories reads only metadata, but at most
+``max_scanned_runs`` ``run.json`` files are parsed per call, newest first. A capped scan
+says so via ``scanned_runs``/``scan_truncated``/``degraded_reasons``.
 
-Runtime-reported usage is summarized only from persisted
-``InvocationRecord`` values. Missing fields stay unknown, and no value is
-reconstructed from a price table or converted to USD.
+Usage is summed only from persisted ``InvocationRecord`` values; a missing field stays
+unknown and nothing is priced or converted to USD here.
 """
 
 from __future__ import annotations
@@ -127,6 +120,7 @@ from .run_metrics import (
     resolve_usage,
     summarize_usage,
 )
+from .run_sort import sort_runs
 from .store import ARTIFACT_FILENAMES, OPERATOR_ESCALATION_FILENAME
 from .transcripts import read_call_tool_calls
 
@@ -1069,7 +1063,11 @@ def _listed_runs(
         if (run_filter.state is None or run_filter.state in _list_states(run, now, stale_after))
         and _run_matches(store, run, run_filter, scan.artifact_facts)
     ]
-    return kept[::-1] if run_filter.oldest_first else kept
+    return sort_runs(kept, run_filter.sort, now, lambda run_id: _title_of(store, run_id, scan))
+
+
+def _title_of(store: RunStoreProtocol, run_id: str, scan: RunScanResult) -> str | None:
+    return _memoized_artifact_facts(store, run_id, scan.artifact_facts).title
 
 
 def _run_matches(

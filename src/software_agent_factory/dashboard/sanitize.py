@@ -47,6 +47,7 @@ from ..models import (
     HALT_REASON_COPY,
     MAX_GUIDANCE_FINDINGS,
     MAX_SCOPE_APPROVAL_PATHS,
+    NANO_AIU_PER_USD,
     TOKEN_CLASS_FIELDS,
     UNRESOLVED_DECISIONS_REPLACE_ACTION,
     ActiveInvocationStatus,
@@ -319,8 +320,6 @@ PROJECT_MODEL_FIELDS: frozenset[str] = frozenset(
         "status",
     }
 )
-
-NANO_AIU_PER_USD = 100_000_000_000
 
 #: The run file each guidance names. The words come from ``HALT_REASON_COPY``.
 _GUIDANCE_ARTIFACTS: dict[HaltReasonCode, str] = {

@@ -1607,14 +1607,20 @@ that does not exist, or whose id is not even shaped like one, is a 404.
 `offset`. `q` matches part of the run id, the work item id, the issue id or the
 title, without case, up to 100 characters. `state` is `escalated`, `active`,
 `failed` or `succeeded`. `project` is a project id. `sort=oldest` puts the
-oldest runs first. The server filters before it pages, so `page.total` counts
+oldest runs first. `sort` can also be `title`, `state`, `duration` or `cost`,
+low to high, or the same name after `-`, high to low. Runs with the same value
+stay newest first, and a run with no title or cost goes last. The Title, State,
+Duration, Cost and Started headings are sort buttons. The server sorts and
+filters before it pages, so `page.total` counts
 the matching runs. The overview counts still cover every run. A value outside
 these is a 400. The run list sends these from its search bar. The address keeps
 them with the page offset, so a link or Back opens the same list. The run
 page splits its cards into tabs (Overview, Activity, Changes, Review, Checks and
 Raw), and `?tab=` in the address opens one. Keys work on every view. `g` then
 `r`, `c`, `p` or `h` opens a view. `j` and `k` move through the runs, and Enter
-opens one. `n` and `f` jump to the next run that needs you or that failed. `/`
+opens one. `n` and `f` jump to the next run that needs you or that failed.
+With no such run below on the page, they open the list of only those runs. On
+that list they open its next page. Either way they pick the first run. `/`
 searches, `r` refreshes and `?` lists the keys. Keys do nothing in a field.
 
 There is one resume action for each resumable class. A person can approve a risk approval or answer

@@ -16,11 +16,11 @@ MAX_AGENTS_MD_LINES = 100
 OVERSIZED_MODULES = {
     "workflow.py": 2703,
     "github.py": 1979,
-    "observability.py": 1417,
+    "observability.py": 1415,
     "cli.py": 1806,
     "escalation.py": 1501,
     "projects.py": 1690,
-    "dashboard/sanitize.py": 1049,
+    "dashboard/sanitize.py": 1048,
     "service.py": 951,
     "scheduler.py": 961,
     "repository_profile.py": 970,
