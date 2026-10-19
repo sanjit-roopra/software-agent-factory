@@ -10,6 +10,7 @@ documented contract in ``software_agent_factory.dashboard.snapshot``.
 
 from __future__ import annotations
 
+import hashlib
 import http.client
 import io
 import json
@@ -193,6 +194,9 @@ FIXTURE_DETAILS: dict[str, dict[str, Any]] = {
     }
     for run in FIXTURE_RUNS
 }
+
+_APP_JS = dashboard_assets.APP_JS_PATH
+_STYLE_CSS = dashboard_assets.STYLE_CSS_PATH
 
 
 def fake_snapshot_provider(*, limit: int, offset: int) -> dict[str, Any]:
@@ -668,8 +672,8 @@ def test_each_dashboard_port_has_its_own_cookie_name() -> None:
     ("path", "content_type"),
     [
         pytest.param("/", "text/html", id="page"),
-        pytest.param("/assets/app.js", "javascript", id="script"),
-        pytest.param("/assets/style.css", "css", id="stylesheet"),
+        pytest.param(_APP_JS, "javascript", id="script"),
+        pytest.param(_STYLE_CSS, "css", id="stylesheet"),
         pytest.param("/assets/favicon.svg", "image/svg+xml", id="icon"),
         pytest.param("/assets/favicon-alert.svg", "image/svg+xml", id="alert-icon"),
         pytest.param("/assets/inter-latin.woff2", "font/woff2", id="font"),
@@ -685,7 +689,7 @@ def test_the_cookie_alone_authenticates_a_read(
     assert content_type in response.getheader("Content-Type", "")
 
 
-@pytest.mark.parametrize("path", ["/", "/assets/app.js", SUMMARY_PATH])
+@pytest.mark.parametrize("path", ["/", _APP_JS, SUMMARY_PATH])
 def test_a_cookie_of_another_start_is_401(running_server: RunningServer, path: str) -> None:
     headers = running_server.cookie_headers(STALE_TOKEN)
 
@@ -725,7 +729,7 @@ def test_a_valid_token_header_beats_a_cookie_of_another_start(
     assert response.status == 200
 
 
-@pytest.mark.parametrize("path", [SUMMARY_PATH, "/api/runs", "/assets/app.js", "/assets/style.css"])
+@pytest.mark.parametrize("path", [SUMMARY_PATH, "/api/runs", _APP_JS, _STYLE_CSS])
 def test_the_token_in_the_url_authenticates_nothing_but_the_page_link(
     running_server: RunningServer, path: str
 ) -> None:
@@ -758,8 +762,8 @@ _CREDENTIALS = {
 #: Every path a ``GET`` can reach, with one that no route serves.
 _GET_ROUTES = (
     "/",
-    "/assets/app.js",
-    "/assets/style.css",
+    _APP_JS,
+    _STYLE_CSS,
     "/healthz",
     SUMMARY_PATH,
     "/api/runs",
@@ -1154,15 +1158,13 @@ def test_unknown_route_is_404(running_server: RunningServer) -> None:
 
 
 def test_assets_are_served(running_server: RunningServer) -> None:
-    js_response = running_server.request(
-        "GET", "/assets/app.js", headers=running_server.cookie_headers()
-    )
+    js_response = running_server.request("GET", _APP_JS, headers=running_server.cookie_headers())
     assert js_response.status == 200
     assert "javascript" in js_response.getheader("Content-Type", "")
     assert js_response.read_body == _static_bytes("app.js")  # type: ignore[attr-defined]
 
     css_response = running_server.request(
-        "GET", "/assets/style.css", headers=running_server.cookie_headers()
+        "GET", _STYLE_CSS, headers=running_server.cookie_headers()
     )
     assert css_response.status == 200
     assert "css" in css_response.getheader("Content-Type", "")
@@ -2092,12 +2094,54 @@ def test_app_js_renders_server_text_with_textcontent() -> None:
     assert "model.status" in js
 
 
+@pytest.mark.parametrize("path", [_APP_JS, _STYLE_CSS])
+def test_content_named_assets_may_be_cached_for_good(
+    running_server: RunningServer, path: str
+) -> None:
+    response = running_server.request("GET", path, headers=running_server.cookie_headers())
+
+    assert response.status == 200
+    assert response.getheader("Cache-Control") == "public, max-age=31536000, immutable"
+    assert "script-src 'self'" in response.getheader("Content-Security-Policy", "")
+
+
+@pytest.mark.parametrize(
+    "path", ["/", "/assets/favicon.svg", "/assets/inter-latin.woff2", SUMMARY_PATH]
+)
+def test_the_page_api_and_plain_assets_are_never_cached(
+    running_server: RunningServer, path: str
+) -> None:
+    response = running_server.request("GET", path, headers=running_server.cookie_headers())
+
+    assert response.status == 200
+    assert response.getheader("Cache-Control") == "no-store"
+
+
+@pytest.mark.parametrize(
+    "path", ["/assets/app.js", "/assets/style.css", "/assets/app.0000000000000000.js"]
+)
+def test_an_asset_url_of_another_release_is_404(running_server: RunningServer, path: str) -> None:
+    response = running_server.request("GET", path, headers=running_server.cookie_headers())
+
+    assert response.status == 404
+
+
+def test_asset_urls_name_the_body_they_serve() -> None:
+    js_hash = hashlib.sha256(_static_bytes("app.js")).hexdigest()[:16]
+    css_hash = hashlib.sha256(_static_bytes("style.css")).hexdigest()[:16]
+    html = dashboard_assets.render_index_html(token="fixture-token")
+
+    assert _APP_JS == f"/assets/app.{js_hash}.js"
+    assert _STYLE_CSS == f"/assets/style.{css_hash}.css"
+    assert f'href="{_STYLE_CSS}"' in html
+
+
 def test_index_html_has_no_inline_script_body() -> None:
     html = dashboard_assets.render_index_html(token="fixture-token")
     assert "<script>" not in html
     assert "onclick=" not in html
     assert "onerror=" not in html
-    assert 'src="/assets/app.js"' in html
+    assert f'src="{_APP_JS}"' in html
     assert html.count("fixture-token") == 1
 
 
@@ -2398,7 +2442,7 @@ def test_live_loopback_smoke(running_server: RunningServer) -> None:
     page_response = running_server.request("GET", "/", headers=session)
     assert page_response.status == 200
 
-    js_response = running_server.request("GET", "/assets/app.js", headers=session)
+    js_response = running_server.request("GET", _APP_JS, headers=session)
     assert js_response.status == 200
 
     summary_response = running_server.request(

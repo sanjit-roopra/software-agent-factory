@@ -1,5 +1,36 @@
 # Architecture Decisions
 
+## ADR-076: Poll fast only while a run can change, and cache the script and stylesheet
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The dashboard polled the open view every five seconds, also when every run it
+showed was over. That was too slow to follow a busy run and too often for a page
+where nothing can change. The script and stylesheet came with
+`Cache-Control: no-store`, so each page load fetched both again.
+
+### Decision
+
+The poll checks every 2 seconds whether the open view is due. The view is due after
+2 seconds while it shows a run that can change, else after 15 seconds. Such a run
+is an active or stale row in the run list, an active open run, or a picked pair
+that is not over. A check that is not due sends nothing. A hidden tab still does not
+poll.
+
+The page names the script and stylesheet by their content, for example
+`/assets/app.<hash>.js`. These two answers carry
+`Cache-Control: public, max-age=31536000, immutable`. A new release has new names,
+so an old name answers `404`. The page, the API, the icons and the font keep
+`no-store`. The server still reads and encodes each file once, when it starts.
+
+### Consequences
+
+A lost connection can take up to 15 seconds to show on a quiet view. The run scan
+cache (6 seconds) outlasts the fast poll, so fast polls reuse one scan. No
+dashboard write action changes.
+
 ## ADR-075: Show on the dashboard whether the factory service runs
 
 Status: accepted on 2026-10-19.
