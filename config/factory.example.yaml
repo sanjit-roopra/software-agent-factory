@@ -339,6 +339,11 @@ escalation:
   allowed_hosts:
     - "github.com"
 
+# The service posts a macOS notification when a run needs you or finishes.
+# It works only on macOS.
+notifications:
+  macos: false
+
 risk:
   R0:
     human_approval: false

@@ -442,6 +442,23 @@ escalation:
 
 When enabled, `authorized_identities` must contain at least one entry.
 
+## notifications
+
+```yaml
+notifications:
+  macos: false
+```
+
+| Key | Type | Default | Effect |
+| --- | --- | --- | --- |
+| `macos` | bool | `false` | Whether `factory start` (the service) posts a macOS notification when a run it drove stops for you (`NEEDS_HUMAN`) or finishes. |
+
+The service calls `/usr/bin/osascript` and passes the text as an argument, not as
+part of the script. The text names the work item and the state or the reason. The
+factory removes secrets from it and keeps it short. On other systems the flag does
+nothing. If a notification fails, the factory writes a warning to the log and the
+run goes on.
+
 ## pi
 
 Settings for `--runtime pi`. See [Real pi runs](../get-started/pi.md). The block

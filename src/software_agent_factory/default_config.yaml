@@ -321,6 +321,11 @@ escalation:
   allowed_hosts:
     - "github.com"
 
+# The service posts a macOS notification when a run needs you or finishes.
+# It works only on macOS.
+notifications:
+  macos: false
+
 # Set enabled to false for an autonomous factory. Triage still sets a risk
 # level for routing, but no risk level stops a run for human approval and
 # triage does not write a risk rationale.
