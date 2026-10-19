@@ -1413,7 +1413,6 @@ def dashboard_command(
     from .escalation_protocol import ReplyPolicy
     from .models import RunListFilter
     from .observability import (
-        RunScanCache,
         build_active_invocation_summary,
         build_monitoring_snapshot,
         build_run_detail,
@@ -1423,6 +1422,7 @@ def dashboard_command(
     from .run_evidence import build_run_diff, build_run_evidence
     from .run_metrics import resolve_usage
     from .run_requests import build_steer_requester, build_stop_requester
+    from .run_scan_cache import RunScanCache
     from .store import FileRunStore
     from .transcripts import call_transcript_reader
 

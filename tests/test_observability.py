@@ -21,6 +21,7 @@ import json
 import logging
 import os
 import re
+import shutil
 import socket
 from collections import Counter
 from dataclasses import dataclass, field
@@ -82,12 +83,10 @@ from software_agent_factory.models import (
 )
 from software_agent_factory.observability import (
     DEFAULT_MAX_SCANNED_RUNS,
-    DEFAULT_SCAN_CACHE_TTL,
     DEFAULT_STALE_AFTER,
     ActiveInvocationSummary,
     MonitoringSnapshot,
     RunGuidance,
-    RunScanCache,
     RunScanResult,
     RunStoreProtocol,
     RunSummary,
@@ -107,6 +106,7 @@ from software_agent_factory.run_metrics import (
     resolve_usage,
     summarize_usage,
 )
+from software_agent_factory.run_scan_cache import DEFAULT_SCAN_CACHE_TTL, RunScanCache
 from software_agent_factory.store import OPERATOR_ESCALATION_FILENAME, FileRunStore
 
 try:
@@ -2878,6 +2878,92 @@ def test_run_scan_cache_thread_safety(tmp_path: Path) -> None:
         assert len(res.readable_runs) == 5
     assert cache.misses == 1
     assert cache.hits == 9
+
+
+def test_run_scan_cache_rescan_parses_only_changed_runs(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    for name in ("keep", "change", "drop"):
+        store.save_run(_run(f"run-{name}", state=WorkflowState.IMPLEMENTING))
+
+    current_time = 0.0
+    cache = RunScanCache(store, ttl=1.0, clock=lambda: current_time)
+    first = {run.id: run for run in cache.get_scan().readable_runs}
+    assert cache.parses == 3
+
+    changed = _run("run-change", state=WorkflowState.DONE)
+    store.save_run(changed)
+    run_json = store.runs_dir / "run-change" / "run.json"
+    stat = run_json.stat()
+    os.utime(run_json, ns=(stat.st_atime_ns, stat.st_mtime_ns + 1_000_000))
+    shutil.rmtree(store.runs_dir / "run-drop")
+    store.save_run(_run("run-new", state=WorkflowState.CREATED))
+
+    current_time = 2.0
+    second = {run.id: run for run in cache.get_scan().readable_runs}
+
+    assert set(second) == {"run-keep", "run-change", "run-new"}
+    assert second["run-keep"] is first["run-keep"]
+    assert second["run-change"].state == WorkflowState.DONE
+    assert cache.parses == 5  # run-change and run-new only
+
+    # A dropped run leaves the cache: bringing it back parses it again.
+    store.save_run(_run("run-drop", state=WorkflowState.DONE))
+    current_time = 4.0
+    third = {run.id: run for run in cache.get_scan().readable_runs}
+    assert third["run-drop"].state == WorkflowState.DONE
+    assert cache.parses == 6
+
+
+def test_run_scan_cache_reparses_a_same_size_rewrite_with_the_same_mtime(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(_run("run-a", state=WorkflowState.VERIFYING))
+    run_json = store.runs_dir / "run-a" / "run.json"
+    before = run_json.stat()
+
+    current_time = 0.0
+    cache = RunScanCache(store, ttl=1.0, clock=lambda: current_time)
+    assert cache.get_scan().readable_runs[0].state == WorkflowState.VERIFYING
+
+    # Same-length state value, written within one mtime tick: only the inode differs.
+    rewritten = run_json.with_name("run.json.tmp")
+    rewritten.write_text(run_json.read_text().replace('"VERIFYING"', '"REVIEWING"'))
+    os.replace(rewritten, run_json)
+    os.utime(run_json, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert run_json.stat().st_size == before.st_size
+
+    current_time = 2.0
+    assert cache.get_scan().readable_runs[0].state == WorkflowState.REVIEWING
+    assert cache.parses == 2
+
+
+def test_run_scan_cache_rescan_keeps_callers_lists_apart(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(_run("run-a", state=WorkflowState.DONE))
+
+    current_time = 0.0
+    cache = RunScanCache(store, ttl=1.0, clock=lambda: current_time)
+    first = cache.get_scan()
+    first.readable_runs.clear()
+    first.unreadable_reasons["corrupt"] = 1
+
+    current_time = 2.0
+    second = cache.get_scan()
+    assert [run.id for run in second.readable_runs] == ["run-a"]
+    assert second.unreadable_reasons == {}
+    assert cache.parses == 1
+
+
+def test_run_scan_cache_reports_a_missing_run_json_as_unreadable(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(_run("run-ok", state=WorkflowState.DONE))
+    (store.runs_dir / "run-empty").mkdir()
+
+    scan = RunScanCache(store).get_scan()
+
+    assert [run.id for run in scan.readable_runs] == ["run-ok"]
+    assert scan.unreadable_reasons == {"missing": 1}
 
 
 def test_run_scan_cache_invalid_arguments(tmp_path: Path) -> None:

@@ -56,8 +56,6 @@ import json
 import os
 import re
 import socket
-import threading
-import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
@@ -140,8 +138,6 @@ __all__ = [
     "RunStoreProtocol",
     "RunScanResult",
     "scan_readable_runs",
-    "RunScanCache",
-    "DEFAULT_SCAN_CACHE_TTL",
     "PageMeta",
     "RunStateCounts",
     "RunSummary",
@@ -811,104 +807,17 @@ class RunScanResult:
         return reasons
 
 
-# Longer than the dashboard poll (POLL_INTERVAL_MS, 5 s in dashboard/static/app.js), so
-# back-to-back polls reuse one scan instead of rescanning every tick.
-DEFAULT_SCAN_CACHE_TTL: float = 6.0
-
-
-class RunScanCache:
-    """Thread-safe, bounded, monotonic-TTL cache for readable run scans.
-
-    Designed for read-only observability and dashboard refresh cycles so
-    /api/summary, its health data, and nearby /api/runs reads share a single
-    validated run scan rather than deserializing the same run set multiple
-    times. Uses monotonic time expiry. Each caller gets its own run list and
-    reason map, but the ``FactoryRun`` objects are shared and must be treated
-    as read-only: a deep copy of every run on every hit cost almost as much as
-    a fresh scan. Never used as workflow authority.
-    """
-
-    def __init__(
-        self,
-        store: RunStoreProtocol,
-        *,
-        ttl: float = DEFAULT_SCAN_CACHE_TTL,
-        clock: Callable[[], float] = time.monotonic,
-    ) -> None:
-        if ttl <= 0:
-            raise ValueError("ttl must be > 0")
-        self._store = store
-        self._ttl = ttl
-        self._clock = clock
-        self._lock = threading.Lock()
-        self._cached_scan: RunScanResult | None = None
-        self._cached_max_scanned_runs: int | None = None
-        self._cached_at: float = 0.0
-        self._hits: int = 0
-        self._misses: int = 0
-
-    @property
-    def ttl(self) -> float:
-        return self._ttl
-
-    @property
-    def hits(self) -> int:
-        with self._lock:
-            return self._hits
-
-    @property
-    def misses(self) -> int:
-        with self._lock:
-            return self._misses
-
-    def get_scan(self, max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS) -> RunScanResult:
-        """Return a validated scan, reusing the cached scan if within TTL.
-
-        Returns a shallow copy: the run list and reason map are new, the runs
-        themselves are the cached, read-only objects.
-        """
-        if max_scanned_runs <= 0:
-            raise ValueError("max_scanned_runs must be > 0")
-
-        with self._lock:
-            now_mono = self._clock()
-            if (
-                self._cached_scan is not None
-                and self._cached_max_scanned_runs == max_scanned_runs
-                and (now_mono - self._cached_at) < self._ttl
-            ):
-                self._hits += 1
-                return self._copy_scan(self._cached_scan)
-
-            self._misses += 1
-            scan = scan_readable_runs(self._store, max_scanned_runs)
-            self._cached_scan = scan
-            self._cached_max_scanned_runs = max_scanned_runs
-            self._cached_at = now_mono
-            return self._copy_scan(scan)
-
-    @staticmethod
-    def _copy_scan(scan: RunScanResult) -> RunScanResult:
-        return RunScanResult(
-            readable_runs=list(scan.readable_runs),
-            total_directories=scan.total_directories,
-            scanned_runs=scan.scanned_runs,
-            scan_truncated=scan.scan_truncated,
-            unreadable_reasons=dict(scan.unreadable_reasons),
-            artifact_facts=scan.artifact_facts,
-        )
-
-
 def scan_readable_runs(
     store: RunStoreProtocol,
     max_scanned_runs: int = DEFAULT_MAX_SCANNED_RUNS,
+    load_run: Callable[[str], FactoryRun] | None = None,
 ) -> RunScanResult:
     """Discover run directories (broad, cheap), then open and parse at most
     ``max_scanned_runs`` of the newest ones (bounded, expensive), returning
     every readable ``FactoryRun`` sorted newest-first plus honest scan
     metadata. A directory whose ``run.json`` is missing or fails to parse is
     tallied into ``unreadable_reasons`` rather than raised or dropped
-    silently.
+    silently. ``load_run`` replaces ``store.load_run`` (a cache passes its own).
     """
     if max_scanned_runs <= 0:
         raise ValueError("max_scanned_runs must be > 0")
@@ -916,11 +825,12 @@ def scan_readable_runs(
         store, max_scanned_runs
     )
 
+    load = store.load_run if load_run is None else load_run
     readable_runs: list[FactoryRun] = []
     unreadable_reasons: dict[str, int] = {}
     for run_id in candidate_run_ids:
         try:
-            readable_runs.append(store.load_run(run_id))
+            readable_runs.append(load(run_id))
         except (OSError, ValueError) as exc:
             reason = _categorize_load_error(exc)
             unreadable_reasons[reason] = unreadable_reasons.get(reason, 0) + 1

@@ -68,6 +68,7 @@ benchmark_dashboard_monitoring_summary = _bench.benchmark_dashboard_monitoring_s
 benchmark_dashboard_operational_health = _bench.benchmark_dashboard_operational_health
 benchmark_dashboard_shared_scan_cold = _bench.benchmark_dashboard_shared_scan_cold
 benchmark_dashboard_shared_cache_warm = _bench.benchmark_dashboard_shared_cache_warm
+benchmark_scan_cache_refresh = _bench.benchmark_scan_cache_refresh
 benchmark_scheduler_drain = _bench.benchmark_scheduler_drain
 benchmark_git_evidence_collection = _bench.benchmark_git_evidence_collection
 compare_with_baseline = _bench.compare_with_baseline
@@ -479,6 +480,10 @@ def test_benchmark_harness_components() -> None:
 
     dash_warm = benchmark_dashboard_shared_cache_warm(store_runs=10, iterations=1, warmup=0)
     _assert_benchmark_schema(dash_warm)
+
+    for cold in (True, False):
+        refresh = benchmark_scan_cache_refresh(store_runs=10, iterations=1, warmup=0, cold=cold)
+        _assert_benchmark_schema(refresh)
 
     # 5. Scheduler backlog drain at concurrency 1 and 2
     sched_c1 = benchmark_scheduler_drain(concurrency=1, num_items=5, iterations=1, warmup=0)
