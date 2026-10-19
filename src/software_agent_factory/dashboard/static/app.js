@@ -3633,20 +3633,11 @@
     return STAGES.findIndex(function ([, states]) { return states.includes(stateName); });
   }
 
-  // Each stage's entries, time and status from the run's state moves. A stage the run
-  // left is "done", the one it is in is "current", and the one it stopped in is "halted".
-  // A run recorded before the moves were kept gets no stages.
-  function stageSteps(detail, nowMs) {
-    const moves = asArray(detail.transitions);
-    if (moves.length === 0) {
-      return [];
-    }
-    const steps = STAGES.map(function ([label]) {
-      return { label: label, entries: 0, ms: 0, status: "todo" };
-    });
-    // When the oldest moves were dropped (or the run began before moves were kept),
-    // the time before the first kept move is unknown, so it is not counted.
-    let since = moves[0].from_state === "CREATED" ? Date.parse(detail.created_at) : NaN;
+  // Adds each stage's entries and time from the run's state moves. When the oldest
+  // moves were dropped (or the run began before moves were kept), the time before the
+  // first kept move is unknown, so it is not counted. Returns the time of the last move.
+  function tallyStageMoves(steps, moves, createdAt) {
+    let since = moves[0].from_state === "CREATED" ? Date.parse(createdAt) : Number.NaN;
     for (const move of moves) {
       const at = Date.parse(move.at);
       const from = stageIndex(move.from_state);
@@ -3659,20 +3650,41 @@
       }
       since = at;
     }
-    for (const step of steps) {
-      step.status = step.entries > 0 ? "done" : "todo";
-    }
+    return since;
+  }
+
+  // Marks the stage the run is in as "current" (adding its time so far), or the stage
+  // a stopped run halted in as "halted".
+  function markLiveStage(steps, detail, lastMoveMs, nowMs) {
     const current = stageIndex(detail.state);
     if (current >= 0 && detail.is_finished !== true) {
       const started = Date.parse(detail.state_started_at);
       steps[current].status = "current";
-      steps[current].ms += Math.max(0, nowMs - (Number.isFinite(started) ? started : since));
+      steps[current].ms += Math.max(0, nowMs - (Number.isFinite(started) ? started : lastMoveMs));
     } else if (detail.state === "NEEDS_HUMAN" || detail.state === "FAILED") {
-      const halted = stageIndex(moves.at(-1).from_state);
+      const halted = stageIndex(asArray(detail.transitions).at(-1).from_state);
       if (halted >= 0) {
         steps[halted].status = "halted";
       }
     }
+  }
+
+  // Each stage's entries, time and status from the run's state moves. A stage the run
+  // left is "done", the one it is in is "current", and the one it stopped in is "halted".
+  // A run recorded before the moves were kept gets no stages.
+  function stageSteps(detail, nowMs) {
+    const moves = asArray(detail.transitions);
+    if (moves.length === 0) {
+      return [];
+    }
+    const steps = STAGES.map(function ([label]) {
+      return { label: label, entries: 0, ms: 0, status: "todo" };
+    });
+    const lastMoveMs = tallyStageMoves(steps, moves, detail.created_at);
+    for (const step of steps) {
+      step.status = step.entries > 0 ? "done" : "todo";
+    }
+    markLiveStage(steps, detail, lastMoveMs, nowMs);
     return steps.map(function (step) {
       const entered = step.entries > 1 ? " \u00d7" + step.entries : "";
       return {
