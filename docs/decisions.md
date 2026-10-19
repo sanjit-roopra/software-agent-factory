@@ -1,5 +1,31 @@
 # Architecture Decisions
 
+## ADR-069: Show call timings on the Steps view, and stop sending unread run timings
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The dashboard sent a `performance` record on each run in the run list, on the run
+page and on each call. The page did not read any of them. The run list sent the
+record for every run on every poll. The run page already shows the time in each
+stage from the run's state moves (ADR-067). The stage timings in the record add
+nothing new.
+
+### Decision
+
+The run list and the run page no longer send the run's `performance` record. Each
+call keeps its record, but only the two numbers the page shows. They are
+`process_boot_ms`, the time the runtime took to start, and `first_event_ms`, the time
+until its first event. An open call on the Steps view shows "Timing" with these two numbers and
+the call's total time. A call with neither number shows no Timing line.
+
+### Consequences
+
+The run list payload is smaller. A person can see when a slow call spent its time
+starting the runtime or waiting for the model. The `factory status` command and the
+stored run do not change. No new write action is added.
+
 ## ADR-068: A split diff view, and colour for code in the diff
 
 Status: accepted on 2026-10-19.

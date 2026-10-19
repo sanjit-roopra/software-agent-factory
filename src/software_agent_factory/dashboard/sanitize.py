@@ -119,7 +119,6 @@ RUN_SUMMARY_FIELDS: frozenset[str] = frozenset(
         "review_status",
         "risk_assessment_enabled",
         "waiting_for_human",
-        "performance",
         "state_started_at",
         "completed_at",
         "pull_request_url",
@@ -429,32 +428,15 @@ def _bounded_text(value: Any) -> str | None:
 
 
 def sanitize_performance(raw: Any) -> dict[str, Any]:
-    """Reduce one performance record to bounded, safe numeric telemetry."""
+    """Keep only the call timings the Steps view shows: runtime start and first event."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
         return {}
-    sanitized: dict[str, Any] = {}
-    for key in ("prompt_chars", "response_chars"):
-        val = data.get(key)
-        if is_count(val):
-            sanitized[key] = val
-    for key in ("process_boot_ms", "first_event_ms"):
-        val = data.get(key)
-        if is_number(val) and val >= 0:
-            sanitized[key] = float(val)
-    durations = data.get("durations_ms")
-    if isinstance(durations, dict):
-        sanitized["durations_ms"] = {
-            str(k)[:64]: float(v)
-            for k, v in list(durations.items())[:100]
-            if is_number(v) and v >= 0
-        }
-    counters = data.get("counters")
-    if isinstance(counters, dict):
-        sanitized["counters"] = {
-            str(k)[:64]: int(v) for k, v in list(counters.items())[:100] if is_count(v)
-        }
-    return sanitized
+    return {
+        key: float(data[key])
+        for key in ("process_boot_ms", "first_event_ms")
+        if is_number(data.get(key)) and data[key] >= 0
+    }
 
 
 def _sanitize_call_brief(raw: Any) -> dict[str, Any]:
@@ -475,8 +457,6 @@ def sanitize_run_summary(raw: Any) -> dict[str, Any]:
         raise TypeError("run summary must serialize to a JSON object")
     sanitized = _allowlist(data, RUN_SUMMARY_FIELDS)
     _sanitize_summary_fields(sanitized)
-    if "performance" in sanitized:
-        sanitized["performance"] = sanitize_performance(sanitized["performance"])
     if "usage" in sanitized:
         sanitized["usage"] = sanitize_usage(sanitized["usage"])
     if _CALLS_FIELD in sanitized:
@@ -775,8 +755,6 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     _sanitize_summary_fields(sanitized)
     if "usage" in sanitized:
         sanitized["usage"] = sanitize_usage(sanitized["usage"])
-    if "performance" in sanitized:
-        sanitized["performance"] = sanitize_performance(sanitized["performance"])
     run_id = run_id_of(data)
     sanitized.update(_reason_fields(data.get("failure_reason"), run_id))
     sanitized.update(_sanitize_calls(data, run_id))

@@ -206,3 +206,20 @@ def test_the_steps_view_is_reduced_until_a_person_asks_for_all_detail() -> None:
     assert '=== "full"' in function_source(_JS, "readStepsDetail")
     assert "showStepsDetail(readStepsDetail())" in _JS
     assert 'id="steps-view-toggle" type="button" aria-pressed="false"' in page
+
+
+def test_timing_shows_boot_first_event_and_total_when_the_runtime_measured_them() -> None:
+    assert _values(
+        JsCall("timingFields", (None, 5000)),
+        JsCall("timingFields", ({}, 5000)),
+        JsCall("timingFields", ({"process_boot_ms": 350.4, "first_event_ms": 2100.0}, 64000)),
+        JsCall("timingFields", ({"first_event_ms": 900.0}, None)),
+    ) == [
+        [],
+        [],
+        [["Timing", "boot 350 ms · first event 2 s · total 1 min 4 s"]],
+        [["Timing", "first event 900 ms"]],
+    ]
+    assert "...timingFields(call.performance, call.duration_ms)" in function_source(
+        _JS, "callFields"
+    )
