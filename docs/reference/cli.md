@@ -456,6 +456,8 @@ stopped run shows its reason. A run with no new signal for too long gets its own
 "Active, stale" badge. The pull request cell shows the number, with a check mark once
 it merged. Duration is the time from the start to the end of the run, and it counts up
 every second while the run works. The time spent in agent calls is its tooltip.
+The table fits the page width, and a long title or reason ends with an ellipsis. On a
+screen narrower than 1360 pixels the calls column is left out.
 
 The run page starts with a summary and the steps of the run. Under the outcome line it
 shows the same tags, the route also for `FULL`, and the pull request link. A run that

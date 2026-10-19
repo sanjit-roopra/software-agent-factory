@@ -328,6 +328,7 @@ a { color: var(--accent); }
   border: 0;
   clip: rect(0 0 0 0);
   clip-path: inset(50%);
+  overflow: hidden;
   white-space: nowrap;
 }
 .copy-row { display: flex; gap: 0.75rem; align-items: center; }
@@ -458,7 +459,35 @@ button:disabled {
 .live-tool { max-width: min(32rem, 60vw); white-space: nowrap; font-family: var(--font-mono); }
 .run-id { margin: -0.5rem 0 0.75rem; color: var(--text-muted); font-size: 0.85rem; overflow-wrap: anywhere; }
 #runs-table + .field-hint { margin-top: 0.75rem; }
-#runs-table td:first-child { min-width: 8rem; }
+/* Fixed layout keeps the run list inside its card: the title and why columns share what
+   the fixed columns leave and cut their text with an ellipsis. */
+#runs-table { table-layout: fixed; }
+#runs-table td { overflow: hidden; text-overflow: ellipsis; }
+#runs-table thead th { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+#runs-table td:first-child a { max-width: 100%; white-space: nowrap; }
+#runs-table .clamp { max-width: 100%; }
+#runs-table .why-cell { min-width: 0; }
+#runs-table tr.group-row > td { overflow: visible; }
+#runs-table tr.group-row a { color: var(--accent); text-decoration: underline; }
+#runs-table th:nth-child(1) { width: auto; }
+#runs-table th:nth-child(2) { width: 10.75rem; }
+#runs-table th:nth-child(3) { width: auto; }
+#runs-table th:nth-child(4) { width: 3.5rem; }
+#runs-table th:nth-child(5) { width: 3.75rem; }
+#runs-table th:nth-child(6) { width: 6rem; }
+#runs-table th:nth-child(7) { width: 4.75rem; }
+#runs-table th:nth-child(8) { width: 6.5rem; }
+#runs-table th:nth-child(9) { width: 8.75rem; }
+#runs-table th:nth-child(10) { width: 2.25rem; }
+/* On a narrower screen the calls column folds to nothing; the run page still shows it.
+   A zero width, not display: none, keeps the fixed layout and the group rows' span. */
+@media (max-width: 1360px) {
+  #runs-table th:nth-child(5) { width: 0; }
+  #runs-table th:nth-child(5), #runs-table tr[data-run-id] > td:nth-child(5) {
+    padding: 0;
+    font-size: 0;
+  }
+}
 .nav-count {
   margin-left: 0.4rem;
   padding: 0 0.45rem;

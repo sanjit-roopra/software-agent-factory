@@ -924,7 +924,45 @@ def test_the_runs_that_need_you_sit_under_their_own_group_row(
     groups = [spec["cells"][0] for spec in specs if spec["className"] == "group-row"]
     assert all(cell["colSpan"] == 10 for cell in groups)
     if groups:
-        assert [cell["value"] for cell in groups] == ["Needs you (2)", "Other runs"]
+        assert [cell["value"] for cell in groups] == ["Needs you \u00b7 2", "Other runs"]
+
+
+@pytest.mark.parametrize(
+    ("total", "expected"),
+    [
+        (
+            5,
+            {
+                "href": "#runs?filter=needs-you",
+                "value": "Needs you \u00b7 2 of 5",
+                "hidden": "",
+                "title": "Show all 5 runs that need you",
+            },
+        ),
+        (2, {"value": "Needs you \u00b7 2"}),
+        (0, {"value": "Needs you \u00b7 2"}),
+        (None, {"value": "Needs you \u00b7 2"}),
+    ],
+    ids=["more-elsewhere", "all-on-page", "count-not-loaded", "no-count"],
+)
+def test_the_needs_you_heading_says_how_many_wait_beyond_this_page(
+    total: int | None, expected: dict[str, str]
+) -> None:
+    [result] = run_functions(dashboard_assets.APP_JS, [JsCall("needsYouHeading", (2, total))])
+    assert result.error is None
+    assert result.value == expected
+
+
+def test_the_needs_you_group_row_links_to_the_filter_when_more_wait() -> None:
+    [result] = run_functions(
+        dashboard_assets.APP_JS,
+        [JsCall("runListSpecs", ([_ACTIONABLE, _STOPPED, _RUNS[0]], None, 0, 18))],
+    )
+    assert isinstance(result.value, list)
+    heading = result.value[0]["cells"][0]
+    assert heading["value"] == "Needs you \u00b7 2 of 18"
+    assert heading["href"] == "#runs?filter=needs-you"
+    assert heading["colSpan"] == 10
 
 
 _HEALTH_NOW_MS = datetime(2026, 10, 1, 12, 0, tzinfo=UTC).timestamp() * 1000
