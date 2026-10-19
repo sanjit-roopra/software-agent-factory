@@ -81,6 +81,11 @@ CANNOT_CONTINUE = "This run cannot continue."
 
 ANSWER_PLACEHOLDER = "<answer>"
 START_HINT = "If factory start is not running, start it."
+#: The hint once the service heartbeat is known (ADR-075): stopped, running, or it already
+#: ticked after the request and waits for a free slot or the daily quota.
+SERVICE_STOPPED_HINT = "The factory service is not running, start it with factory start."
+SERVICE_RUNNING_HINT = "The factory service is running and picks it up on its next tick."
+SERVICE_SEEN_HINT = "The factory service picked it up and starts the run when a slot is free."
 
 #: The cause shown when the escalation block does not say whether a reply is open.
 UNKNOWN_REPLY_STATE = "the reply state is not known"
@@ -372,10 +377,21 @@ def _parse_time(value: Any) -> datetime | None:
     return parsed.astimezone(UTC) if parsed.tzinfo is not None else None
 
 
-def _queued_sentence(request: _Request) -> str:
+def _service_hint(request: _Request, service: Any) -> str:
+    """What the service does with ``request``, from its heartbeat; :data:`START_HINT` if unknown."""
+    if not isinstance(service, dict) or not isinstance(service.get("running"), bool):
+        return START_HINT
+    if not service["running"]:
+        return SERVICE_STOPPED_HINT
+    ticked_at = _parse_time(service.get("ticked_at"))
+    seen = ticked_at is not None and ticked_at > request.created_at
+    return SERVICE_SEEN_HINT if seen else SERVICE_RUNNING_HINT
+
+
+def _queued_sentence(request: _Request, service: Any) -> str:
     moment = request.created_at.strftime("%Y-%m-%d %H:%M UTC")
     template = RESUME_CLASSES[ResumeClassification(request.action)].queued_sentence
-    return template.format(moment=moment, start_hint=START_HINT)
+    return template.format(moment=moment, start_hint=_service_hint(request, service))
 
 
 def _queued_request(
@@ -409,14 +425,14 @@ _STEPS: dict[str, Callable[[dict[str, Any], dict[str, Any]], dict[str, Any]]] = 
 
 
 def _resume_step(
-    run: dict[str, Any], escalation: dict[str, Any], requests: list[_Request]
+    run: dict[str, Any], escalation: dict[str, Any], requests: list[_Request], service: Any
 ) -> dict[str, Any]:
     """The step for a resumable halt, with any dashboard request."""
     classification = escalation.get("resume_classification")
     ids = _reply_ids(run, escalation)
     queued = _queued_request(requests, classification, ids[2]) if ids is not None else None
     if queued is not None:
-        step = _halt_step(NextStepKind.QUEUED, _queued_sentence(queued), escalation)
+        step = _halt_step(NextStepKind.QUEUED, _queued_sentence(queued, service), escalation)
         step.update(
             episode_id=escalation.get("episode_id"),
             context_fingerprint=queued.fingerprint,
@@ -431,10 +447,13 @@ def _resume_step(
     return step
 
 
-def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, Any]:
+def next_step(
+    run: dict[str, Any], requests: Iterable[Any] = (), service: Any = None
+) -> dict[str, Any]:
     """What the operator must do to continue ``run``, or ``kind == "none"``.
 
-    ``requests`` are the dashboard requests of the run's current episode, oldest first. Every
+    ``requests`` are the dashboard requests of the run's current episode, oldest first.
+    ``service`` is the service liveness (``running``, ``ticked_at``) a queued step reports. Every
     step of a waiting run carries its failure reason; one with no page action carries
     ``cli_command``, the ``factory show`` command to inspect it. A
     failed run needs nothing from the operator: the page shows its failure reason in the run
@@ -446,7 +465,7 @@ def next_step(run: dict[str, Any], requests: Iterable[Any] = ()) -> dict[str, An
     if state != WorkflowState.NEEDS_HUMAN:
         return _empty(NextStepKind.NONE)
     if escalation.get("resume_classification") in RESUME_CLASSES:
-        step = _resume_step(run, escalation, _parsed_requests(requests))
+        step = _resume_step(run, escalation, _parsed_requests(requests), service)
     else:
         step = _cannot_continue(run, _reason_sentence(escalation), escalation)
     return _with_reason(step, run)

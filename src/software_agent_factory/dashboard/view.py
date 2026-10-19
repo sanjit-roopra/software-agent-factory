@@ -7,6 +7,7 @@ first, then add the figures the page shows. Pure: no I/O.
 from __future__ import annotations
 
 from collections.abc import Callable, Iterable
+from datetime import datetime
 from typing import Any
 
 from ..models import WorkflowState
@@ -66,6 +67,22 @@ def _queued_requests(detail: dict[str, Any], requests_for: RequestsFor | None) -
     return requests_for(run_id, escalation["episode_id"])
 
 
+def service_view(raw: Any) -> dict[str, Any] | None:
+    """The service liveness the provider read (ADR-075): ``running`` and ``ticked_at``.
+
+    ``None`` when the provider sent none or a bad shape, so the page says nothing about it.
+    """
+    service = raw.get("service") if isinstance(raw, dict) else None
+    if not isinstance(service, dict) or not isinstance(service.get("running"), bool):
+        return None
+    ticked_at = service.get("ticked_at")
+    try:
+        valid = ticked_at is None or datetime.fromisoformat(ticked_at).tzinfo is not None
+    except (TypeError, ValueError):
+        valid = False
+    return {"running": service["running"], "ticked_at": ticked_at if valid else None}
+
+
 def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[str, Any]:
     """A sanitized run detail with its ``totals``, ``next_step``, ``outcome`` and ``headline``.
 
@@ -81,7 +98,8 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
     if "invocations" in detail:
         detail["totals"] = run_totals(detail["invocations"])
         flag_failing_call(detail, detail["invocations"])
-    detail["next_step"] = next_step(detail, _queued_requests(detail, requests_for))
+    requests = _queued_requests(detail, requests_for)
+    detail["next_step"] = next_step(detail, requests, service_view(raw))
     active = detail.get("active_invocation")
     role = active.get("role") if isinstance(active, dict) else None
     resumable = detail["next_step"]["kind"] in _RESUMABLE_STEP_KINDS
@@ -142,14 +160,16 @@ def run_summary_view(raw: Any) -> dict[str, Any]:
 
 
 def summary_view(snapshot: Any) -> dict[str, Any]:
-    """The ``overview`` row and the ``now_running`` calls the Runs page shows.
+    """The ``overview`` row, the ``now_running`` calls and the ``service`` liveness.
 
     The handler adds ``health``. Nothing else of the snapshot is passed on (see
     :data:`.sanitize.SUMMARY_FIELDS`).
     """
     raw = snapshot if isinstance(snapshot, dict) else {}
     now_running = sanitize_active_calls(raw.get("active_calls"))
-    return sanitize_summary({"overview": snapshot_overview(raw), "now_running": now_running})
+    summary = sanitize_summary({"overview": snapshot_overview(raw), "now_running": now_running})
+    summary["service"] = service_view(raw)
+    return summary
 
 
 def project_view(raw: Any) -> dict[str, Any]:

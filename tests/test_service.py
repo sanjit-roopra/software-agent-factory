@@ -24,6 +24,7 @@ from typing import Sequence
 import pytest
 from factory_testing import CrashingRuntime, build_config, git, triage_hook, work_item
 
+from software_agent_factory import service as service_module
 from software_agent_factory.agents import AgentRequest, AgentResult, FakeAgentRuntime
 from software_agent_factory.command_probe import ProbeLimits
 from software_agent_factory.config import FactoryConfig, PullRequestConfig, SetupConfig
@@ -645,6 +646,29 @@ def test_run_forever_survives_an_unexpected_tick_failure(
 
     assert provider.fetch_calls == 2
     assert "factory tick failed (RuntimeError: bad run.json); retrying" in caplog.text
+
+
+def test_run_forever_writes_a_heartbeat_on_every_tick(
+    source_repo: Path, data_dir: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    class StopAfterTwoWaits:
+        def __init__(self) -> None:
+            self.wait_calls = 0
+
+        def is_set(self) -> bool:
+            return False
+
+        def wait(self, _timeout: float) -> bool:
+            self.wait_calls += 1
+            return self.wait_calls == 2
+
+    ticks: list[Path] = []
+    monkeypatch.setattr(service_module, "write_service_heartbeat", ticks.append)
+    service = _service(data_dir, source_repo, LocalProvider([]))
+
+    service.run_forever(StopAfterTwoWaits())
+
+    assert ticks == [data_dir, data_dir]
 
 
 # ---------------------------------------------------------------------------

@@ -88,6 +88,7 @@ def render_index_html(*, token: str) -> str:
       <a href="#health" data-route="health">Health</a>
     </nav>
     <p id="live" class="live">Connecting&hellip;</p>
+    <p id="service-live" class="live" hidden></p>
   </aside>
   <main>
     <p id="notice" role="status" aria-live="polite" tabindex="-1"></p>

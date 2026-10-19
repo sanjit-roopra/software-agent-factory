@@ -198,8 +198,24 @@ attempt granted at <time>, queued for the factory service". An acceptance shows
 "Findings accepted at <time>, queued for the factory service". A scope approval
 shows "Wider scope approved at <time>, queued for the factory service". A CI
 retry shows "CI repair retry requested at <time>, queued for the factory
-service". If `factory start` is not running,
-start it. The request waits until it does.
+service". The sentence then says what the service does with it:
+
+| Sentence | Meaning |
+| --- | --- |
+| `The factory service is running and picks it up on its next tick.` | The service ticked in the last three poll intervals. |
+| `The factory service picked it up and starts the run when a slot is free.` | The service ticked after the request, but has no free slot or daily quota yet. |
+| `The factory service is not running, start it with factory start.` | No tick in the last three poll intervals. The request waits until the service runs. |
+| `If factory start is not running, start it.` | The dashboard cannot tell. |
+
+#### Service liveness
+
+On each cycle, `factory start` writes `service-heartbeat.json` in the data
+directory, with its process id, host and tick time. The dashboard reads this
+file. The service counts as running while its last tick is at most three
+`scheduler.poll_interval_seconds` old. Under the live dot in the sidebar, the
+page shows `Service running · ticked 3 s ago` or `Service not running`. A
+missing or broken file reads as not running. The process id and host stay off
+the page.
 
 #### When the service refuses a request
 

@@ -22,6 +22,9 @@ from software_agent_factory.dashboard.next_step import (
     REFUSAL_CAUSES,
     REOPEN_LIMIT_CAUSE,
     RETRY_STALE_SENTENCES,
+    SERVICE_RUNNING_HINT,
+    SERVICE_SEEN_HINT,
+    SERVICE_STOPPED_HINT,
     STALE_SENTENCES,
     NextStepKind,
     next_step,
@@ -853,6 +856,33 @@ def _request(
         "created_at": created_at,
         **extra,
     }
+
+
+@pytest.mark.parametrize(
+    ("service", "hint"),
+    [
+        (None, START_HINT),
+        ({"running": "yes"}, START_HINT),
+        ({"running": False, "ticked_at": None}, SERVICE_STOPPED_HINT),
+        ({"running": True, "ticked_at": "2026-10-01T09:29:00+00:00"}, SERVICE_RUNNING_HINT),
+        ({"running": True, "ticked_at": "2026-10-01T09:31:00+00:00"}, SERVICE_SEEN_HINT),
+        ({"running": True, "ticked_at": "not a time"}, SERVICE_RUNNING_HINT),
+    ],
+)
+def test_a_queued_request_says_what_the_service_heartbeat_shows(
+    service: dict[str, Any] | None, hint: str
+) -> None:
+    step = next_step(_risk_run(), [_request()], service)
+
+    assert step["sentence"] == f"Approved at {QUEUED_AT}, queued for the factory service. {hint}"
+
+
+def test_the_run_page_reads_the_service_liveness_the_provider_added() -> None:
+    run = {**_risk_run(), "service": {"running": False, "ticked_at": None}}
+
+    step = run_detail_view(run, lambda _run_id, _episode_id: [_request()])["next_step"]
+
+    assert step["sentence"].endswith(SERVICE_STOPPED_HINT)
 
 
 def test_a_pending_approval_shows_when_it_was_queued_and_how_to_start_the_service() -> None:
