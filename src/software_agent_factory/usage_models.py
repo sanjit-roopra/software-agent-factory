@@ -76,11 +76,13 @@ class UsageMetrics(ModelBase):
     field existed)."""
 
 
+#: Nano-AIU in one USD of AI usage value.
+NANO_AIU_PER_USD = 100_000_000_000
+
 #: Token classes and cost units a call reports, named once here. The dashboard
 #: totals, the key figures and the page keys all read these. An unreported value
 #: is ``None``, never ``0``. ``usage_value_usd`` is derived from ``total_nano_aiu``,
 #: so it is not a ``UsageMetrics`` field.
-NANO_AIU_PER_USD = 100_000_000_000
 TOKEN_CLASS_FIELDS: tuple[str, ...] = (
     "input_tokens",
     "output_tokens",

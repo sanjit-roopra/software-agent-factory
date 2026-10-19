@@ -21,7 +21,7 @@ TitleOf = Callable[[str], str | None]
 
 def _duration_seconds(run: FactoryRun, now: datetime) -> float:
     """Wall-clock time from the start, as the run list shows it: up to now while it runs."""
-    if is_run_finished(run) or run.state is WorkflowState.NEEDS_HUMAN:
+    if is_run_finished(run):
         end = run.completed_at or run.updated_at
     else:
         end = now
@@ -34,6 +34,17 @@ def _cost_usd(run: FactoryRun) -> float | None:
     if usage.total_nano_aiu is not None:
         return usage.total_nano_aiu / NANO_AIU_PER_USD
     return usage.list_price_estimate_usd
+
+
+def _shown_state(run: FactoryRun) -> str:
+    """The word the State badge leads with, so a state sort keeps each badge together."""
+    if run.state is WorkflowState.FAILED:
+        return "failed"
+    if run.state is WorkflowState.NEEDS_HUMAN:
+        return "needs you"
+    if is_run_finished(run):
+        return "done"
+    return "active"
 
 
 def _title(run: FactoryRun, title_of: TitleOf) -> str | None:
@@ -51,7 +62,7 @@ def _sort_value(
         cost = _cost_usd(run)
         return None if cost is None else (cost, "")
     if key == "state":
-        return (0.0, run.state.value)
+        return (0.0, f"{_shown_state(run)} {run.state.value}")
     title = _title(run, title_of)
     return None if title is None else (0.0, title)
 

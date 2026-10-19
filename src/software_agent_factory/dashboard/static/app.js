@@ -4938,7 +4938,7 @@
     failure: {
       className: "row-failed",
       onList: function () { return state.filter === null && state.search.state === "failed"; },
-      hash: function () { return runsHash({ ...EMPTY_SEARCH, state: "failed" }, 0); }
+      hash: function () { return runsHash({ ...state.search, state: "failed" }, 0); }
     }
   };
 

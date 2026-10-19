@@ -16,7 +16,8 @@ loaded page. They stopped at the last matching row even when later pages had mor
 them after `-` for high to low, as well as `newest` and `oldest`. The server sorts before
 it pages, so the order holds across pages. Runs with the same value stay newest first,
 and a run with no title or cost goes last in both directions. Cost is the same USD figure
-the list shows: the usage value when reported, else the list-price estimate.
+the list shows: the usage value when reported, else the list-price estimate. State sorts
+by the word on the badge (active, done, failed, needs you), then by the stage name.
 
 The Title, State, Duration, Cost and Started headings are buttons. A first click sorts
 numbers high to low and text from A, and a second click turns the order round. The

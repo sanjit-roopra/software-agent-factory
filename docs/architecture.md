@@ -1608,7 +1608,8 @@ that does not exist, or whose id is not even shaped like one, is a 404.
 title, without case, up to 100 characters. `state` is `escalated`, `active`,
 `failed` or `succeeded`. `project` is a project id. `sort=oldest` puts the
 oldest runs first. `sort` can also be `title`, `state`, `duration` or `cost`,
-low to high, or the same name after `-`, high to low. Runs with the same value
+low to high, or the same name after `-`, high to low. State sorts by the word
+on the badge, then by the stage. Runs with the same value
 stay newest first, and a run with no title or cost goes last. The Title, State,
 Duration, Cost and Started headings are sort buttons. The server sorts and
 filters before it pages, so `page.total` counts
