@@ -451,6 +451,12 @@ class EscalationConfig(ConfigModel):
         return self
 
 
+class NotificationsConfig(ConfigModel):
+    """Opt-in local notices; ``macos`` posts one when a service run needs you or finishes."""
+
+    macos: bool = False
+
+
 class SchedulerConfig(ConfigModel):
     """Local backlog daemon policy (``PLAN.md`` Phases 13 and 14)."""
 
@@ -703,14 +709,14 @@ class FactoryConfig(ConfigModel):
     merge: MergeConfig = Field(default_factory=MergeConfig)
     scheduler: SchedulerConfig = Field(default_factory=SchedulerConfig)
     escalation: EscalationConfig = Field(default_factory=EscalationConfig)
+    notifications: NotificationsConfig = Field(default_factory=NotificationsConfig)
     pi: PiConfig = Field(default_factory=PiConfig)
     setup: SetupConfig = Field(default_factory=SetupConfig)
 
     @model_validator(mode="before")
     @classmethod
     def _drop_removed_performance_section(cls, data: object) -> object:
-        # The fast performance mode was the only use of this section (ADR-036).
-        # Older configuration files can still carry it, so drop it silently.
+        # Fast performance mode was its only use (ADR-036); older files still carry it.
         if isinstance(data, dict):
             return {key: value for key, value in data.items() if key != "performance"}
         return data
@@ -833,28 +839,22 @@ def load_config(
     *,
     model_profile: str | None = None,
 ) -> FactoryConfig:
-    if path is None:
-        raw_text = (
-            resources.files("software_agent_factory")
-            .joinpath(DEFAULT_CONFIG_FILENAME)
-            .read_text(encoding="utf-8")
-        )
-    else:
-        raw_text = Path(path).expanduser().read_text(encoding="utf-8")
+    package = resources.files("software_agent_factory")
+    source = package / DEFAULT_CONFIG_FILENAME if path is None else Path(path).expanduser()
+    raw_text = source.read_text(encoding="utf-8")
 
     payload = yaml.safe_load(raw_text)
     if not isinstance(payload, dict):
         raise ValueError("Configuration must be a YAML mapping")
 
     config = FactoryConfig.model_validate(payload)
-    selected_profile = "default" if model_profile is None else model_profile
-    if selected_profile == "default":
+    if model_profile is None or model_profile == "default":
         return config
     try:
-        models = config.model_profiles[selected_profile]
+        models = config.model_profiles[model_profile]
     except KeyError:
         available = ", ".join(["default", *sorted(config.model_profiles)])
         raise ValueError(
-            f"unknown model profile {selected_profile!r}; available profiles: {available}"
+            f"unknown model profile {model_profile!r}; available profiles: {available}"
         ) from None
     return config.model_copy(update={"models": models})

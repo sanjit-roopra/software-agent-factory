@@ -70,6 +70,7 @@ from .github import (
 )
 from .github_tracker import GitHubIssueProvider
 from .lifecycle import is_run_finished
+from .macos_notifications import notify_run_outcome
 from .models import (
     REPLY_CURSOR_CLOSED,
     STALLED_HALT_REASON,
@@ -363,6 +364,7 @@ class FactoryService:
     def _on_done(self, opaque_id: str, run_id: str) -> None:
         if self._run_ids.get(opaque_id) == run_id:
             self._run_ids.pop(opaque_id, None)
+        notify_run_outcome(self.config.notifications, self.store, run_id)
         self._completion_event.set()
 
     def _on_stall(self, item: TrackerItem, attempts: int) -> StallDecision:
@@ -452,12 +454,7 @@ class FactoryService:
             state=WorkflowState.NEEDS_HUMAN,
         )
         run = self.controller.reopen(run_id, repository)
-        log_run_event(
-            logger,
-            f"reopened run {run_id} finished",
-            run_id=run_id,
-            state=run.state,
-        )
+        log_run_event(logger, f"reopened run {run_id} finished", run_id=run_id, state=run.state)
         return run
 
     def _execute_resume(self, run_id: str, repository: Path) -> FactoryRun:

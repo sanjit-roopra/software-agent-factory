@@ -1,5 +1,34 @@
 # Architecture Decisions
 
+## ADR-080: Opt-in macOS notifications from the service
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The dashboard can notify a person (ADR-079), but only while its tab is open. A
+person who runs `factory start` on a Mac and closes the tab does not learn that a
+run waits for them or is done. Copilot coding agent and Devin tell the person
+when a task ends or waits.
+
+### Decision
+
+A new `notifications.macos` flag is off by default. When it is on and the
+system is macOS, the service posts one notification each time a run it drove
+stops in `NEEDS_HUMAN` or finishes. It does this when the run's worker thread
+ends, in the new `macos_notifications.py` module. It calls
+`/usr/bin/osascript` with a fixed script and gives the text as an argument, so
+no text can change the script. The text names the work item and the reason or
+the state. It goes through `bounded_reason`, so secrets are removed and it is at
+most 200 characters. The call has a 10 second timeout. A failure is logged as a
+warning and never raised.
+
+### Consequences
+
+There is no new dependency and no dashboard change. Runs that reach
+`NEEDS_HUMAN` outside a worker thread, such as at start-up recovery, do not
+notify. A run that waits, is reopened and then finishes notifies twice.
+
 ## ADR-079: Opt-in browser notifications for runs that need you
 
 Status: accepted on 2026-10-19.
