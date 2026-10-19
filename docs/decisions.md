@@ -26,8 +26,10 @@ only for its own run. While the stream is open, the poll runs every 15 seconds a
 a safety net. When the stream breaks, the page polls as in ADR-076 until the
 browser connects again.
 
-A stream ends after five minutes, and the browser connects again. At most eight
-streams are open at once. One more gets `503`, and that page polls. Each stream
+A stream ends after five minutes, and the browser connects again. At most four
+streams are open at once. One more gets `503`, and that page polls. A browser opens
+at most six connections to one host, and each stream holds one. With more streams, the
+tabs can hold every connection, and then the page cannot fetch. Each stream
 holds one server thread. This is the same idea as the latest event id that
 OpenHands uses to resume its event stream.
 

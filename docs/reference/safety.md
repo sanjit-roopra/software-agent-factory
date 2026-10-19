@@ -408,7 +408,7 @@ named write actions, not a control plane.
   listens on `127.0.0.1`, including a forwarded port such as `ssh -L` or a
   container port.
 - The event stream at `/api/events` is a read. It sends only run ids and a
-  change time, and at most eight streams are open at once (ADR-077).
+  change time, and at most four streams are open at once (ADR-077).
 - Renders the run list, run detail, workflow state, attempt history and derived
   metrics. Never command logs, diffs, prompts or raw artifacts.
 - Data minimization is applied twice. The detail provider builds a typed object

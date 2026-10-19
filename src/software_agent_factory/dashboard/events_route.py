@@ -26,8 +26,9 @@ from pathlib import Path
 from typing import Protocol
 
 EVENTS_PATH = "/api/events"
-#: Streams open at once, over every tab. Each one holds a server thread.
-MAX_STREAMS = 8
+#: Streams open at once, over every tab. Each one holds a server thread and one of the six
+#: connections a browser opens to one host, so the cap leaves the page room to fetch.
+MAX_STREAMS = 4
 #: How often a stream reads the run files.
 CHECK_SECONDS = 1.0
 #: A stream with no change sends its id this often, so a dead connection shows.
