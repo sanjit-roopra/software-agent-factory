@@ -2589,11 +2589,9 @@ def test_stored_run_with_a_600_character_failure_reason_shows_it_cut_and_marked(
 
 def test_dashboard_shares_single_scan_across_refresh_cycle(tmp_path: Path) -> None:
     from software_agent_factory.models import FactoryRun, WorkflowState
-    from software_agent_factory.observability import (
-        RunScanCache,
-        build_monitoring_snapshot,
-    )
+    from software_agent_factory.observability import build_monitoring_snapshot
     from software_agent_factory.operational_health import build_operational_health
+    from software_agent_factory.run_scan_cache import RunScanCache
     from software_agent_factory.store import FileRunStore
 
     store = FileRunStore(tmp_path / "data")

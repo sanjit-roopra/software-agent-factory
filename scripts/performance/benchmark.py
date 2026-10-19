@@ -248,23 +248,73 @@ def benchmark_dashboard_operational_health(
         return _measure_repeated(run_health, iterations=iterations, warmup=warmup)
 
 
+def _scan_cache_class() -> Any:
+    """``RunScanCache`` from wherever the benchmarked commit defines it, or ``None``."""
+    import importlib
+
+    for module_name in ("run_scan_cache", "observability"):
+        try:
+            module = importlib.import_module(f"software_agent_factory.{module_name}")
+        except ImportError:
+            continue
+        cache_cls = getattr(module, "RunScanCache", None)
+        if cache_cls is not None:
+            return cache_cls
+    return None
+
+
+def benchmark_scan_cache_refresh(
+    store_runs: int = 1000,
+    iterations: int = 5,
+    warmup: int = 1,
+    *,
+    cold: bool,
+) -> dict[str, Any]:
+    """Benchmark one ``RunScanCache.get_scan`` past its TTL with no run changed.
+
+    ``cold`` uses a new cache each time (every ``run.json`` parsed). Otherwise one
+    cache is reused with a clock that always expires the TTL, so each call is a
+    rescan of an unchanged store: the case a dashboard poll hits most.
+    """
+    from software_agent_factory.store import FileRunStore
+
+    cache_cls = _scan_cache_class()
+    assert cache_cls is not None, "RunScanCache unavailable"
+    ticks = iter(range(0, 10**9, 3600))
+
+    def clock() -> float:
+        return float(next(ticks))
+
+    with tempfile.TemporaryDirectory(prefix="benchmark_scan_refresh_") as temp_dir:
+        store_path = Path(temp_dir)
+        _setup_synthetic_run_store(store_path, num_runs=store_runs)
+        store = FileRunStore(store_path)
+        shared = cache_cls(store, clock=clock)
+
+        def run_scan() -> None:
+            cache = cache_cls(store, clock=clock) if cold else shared
+            assert len(cache.get_scan(store_runs).readable_runs) == store_runs
+
+        return _measure_repeated(run_scan, iterations=iterations, warmup=warmup)
+
+
 def _probe_scan_support(store: Any, store_path: Path, store_runs: int) -> tuple[bool, type | None]:
     """Probe whether RunScanCache and the scan= parameter are supported at execution time."""
     try:
-        from software_agent_factory.observability import (
-            RunScanCache,
-            build_monitoring_snapshot,
-        )
+        from software_agent_factory.observability import build_monitoring_snapshot
         from software_agent_factory.operational_health import build_operational_health
 
-        cache = RunScanCache(store)
+        cache_cls = _scan_cache_class()
+        if cache_cls is None:
+            return False, None
+        cache = cache_cls(store)
         probe_scan = cache.get_scan(store_runs)
         snap = build_monitoring_snapshot(store, max_scanned_runs=store_runs, scan=probe_scan)
         health = build_operational_health(
             store, data_dir=store_path, max_scanned_runs=store_runs, scan=probe_scan
         )
         if snap.scanned_runs == store_runs and health.scanned_runs == store_runs:
-            return True, RunScanCache
+            return True, cache_cls
     except (ImportError, TypeError, AttributeError):
         pass
     return False, None
@@ -745,6 +795,12 @@ def run_all_benchmarks(
         100, iterations, warmup
     )
     results["dashboard_shared_cache_ms"] = results["dashboard_shared_scan_cold_ms"]
+    results["scan_cache_cold_1000_ms"] = benchmark_scan_cache_refresh(
+        1000, iterations, warmup, cold=True
+    )
+    results["scan_cache_refresh_1000_ms"] = benchmark_scan_cache_refresh(
+        1000, iterations, warmup, cold=False
+    )
 
     print("Running Benchmark 4/7: Scheduler Backlog Drain (concurrency 1 & 2)...")
     results["scheduler_drain_c1_ms"] = benchmark_scheduler_drain(
