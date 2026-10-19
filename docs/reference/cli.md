@@ -479,6 +479,12 @@ adds the tester result. "Show all detail" adds the model, tokens, cost and total
 page remembers the choice in this browser. An open call also lists the files it wrote,
 the checks of its attempt and the verdict on that attempt (ADR-066).
 
+The Changes tab shows the patch one file at a time. "Split view" puts the old lines on
+the left and the new lines on the right, and the page remembers the choice in this
+browser. Code in Python, JavaScript, TypeScript, JSON, YAML and Markdown files gets
+colour for keywords, strings, comments and numbers. The colour works one line at a
+time, so text that spans lines keeps the plain colour (ADR-068).
+
 Blocks in the foreground. Binds `127.0.0.1` and nothing else, and requires a token
 generated for that process. It answers `GET` for reads. Six `POST` routes are the
 only writes: approve a halt, answer plan decisions (ADR-033), retry

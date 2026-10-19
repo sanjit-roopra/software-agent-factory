@@ -302,6 +302,8 @@ def render_index_html(*, token: str) -> str:
               <label id="diff-attempt-label" hidden>Attempt
                 <select id="diff-attempt"></select>
               </label>
+              <button id="diff-view-toggle" type="button" aria-pressed="false"
+                aria-controls="diff-body">Split view</button>
             </div>
             <div id="diff-body"></div>
           </section>

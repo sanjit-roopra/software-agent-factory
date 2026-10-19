@@ -429,3 +429,97 @@ def test_scope_counts_and_verification_text() -> None:
         "failed",
         "—",
     ]
+
+
+def test_syntax_language_follows_the_file_extension() -> None:
+    paths = ["src/a.py", "web/App.TSX", "x.json", "ci.yml", "README.md", "Makefile", None]
+    calls = [JsCall("syntaxLanguage", (path,)) for path in paths]
+    values = [result.value for result in run_functions(dashboard_assets.APP_JS, calls)]
+    assert values == ["py", "js", "json", "yaml", "md", None, None]
+
+
+def test_syntax_tokens_mark_keywords_strings_comments_and_numbers() -> None:
+    calls = [
+        JsCall("syntaxTokens", ('def f(x): return "a#b" + 42  # note', "py")),
+        JsCall("syntaxTokens", ("const n = `t` + 'q' // done", "js")),
+        JsCall("syntaxTokens", ('{"ok": true, "n": 1.5}', "json")),
+        JsCall("syntaxTokens", ("  name: build # step", "yaml")),
+        JsCall("syntaxTokens", ("## Usage", "md")),
+        JsCall("syntaxTokens", ("value2 = 3", None)),
+    ]
+    values = [result.value for result in run_functions(dashboard_assets.APP_JS, calls)]
+    assert values == [
+        [
+            ["syn-kw", "def"],
+            ["", " f(x): "],
+            ["syn-kw", "return"],
+            ["", " "],
+            ["syn-str", '"a#b"'],
+            ["", " + "],
+            ["syn-num", "42"],
+            ["", "  "],
+            ["syn-com", "# note"],
+        ],
+        [
+            ["syn-kw", "const"],
+            ["", " n = "],
+            ["syn-str", "`t`"],
+            ["", " + "],
+            ["syn-str", "'q'"],
+            ["", " "],
+            ["syn-com", "// done"],
+        ],
+        [
+            ["", "{"],
+            ["syn-str", '"ok"'],
+            ["", ": "],
+            ["syn-kw", "true"],
+            ["", ", "],
+            ["syn-str", '"n"'],
+            ["", ": "],
+            ["syn-num", "1.5"],
+            ["", "}"],
+        ],
+        [["syn-kw", "  name"], ["", ": build "], ["syn-com", "# step"]],
+        [["syn-kw", "## Usage"]],
+        [["", "value2 = 3"]],
+    ]
+
+
+def test_split_rows_pair_removed_lines_with_the_added_lines_after_them() -> None:
+    patch = "\n".join(
+        [
+            "diff --git a/x b/x",
+            "--- a/x",
+            "+++ b/x",
+            "@@ -1,4 +1,4 @@",
+            " keep",
+            "-old 1",
+            "-old 2",
+            "+new 1",
+            " keep 2",
+            "+only new",
+            "-only old",
+        ]
+    )
+    [result] = run_functions(dashboard_assets.APP_JS, [JsCall("splitDiffRows", (patch,))])
+    assert result.value == [
+        {"full": "diff --git a/x b/x"},
+        {"full": "--- a/x"},
+        {"full": "+++ b/x"},
+        {"full": "@@ -1,4 +1,4 @@"},
+        {"left": " keep", "right": " keep"},
+        {"left": "-old 1", "right": "+new 1"},
+        {"left": "-old 2", "right": None},
+        {"left": " keep 2", "right": " keep 2"},
+        {"left": None, "right": "+only new"},
+        {"left": "-only old", "right": None},
+    ]
+
+
+def test_the_changes_card_has_a_remembered_split_toggle() -> None:
+    html = dashboard_assets.render_index_html(token="t")
+    assert 'id="diff-view-toggle" type="button" aria-pressed="false"' in html
+    js = dashboard_assets.APP_JS
+    assert 'addEventListener("click", toggleDiffSplit)' in js
+    assert "showDiffSplit(readDiffSplit())" in js

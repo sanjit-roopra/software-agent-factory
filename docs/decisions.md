@@ -1,5 +1,38 @@
 # Architecture Decisions
 
+## ADR-068: A split diff view, and colour for code in the diff
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The Changes tab showed each file as one column of plain text, with added lines in
+green and removed lines in red. Copilot coding agent and Devin show a diff side by
+side and colour the code, so a reviewer can read a change faster.
+
+### Decision
+
+A "Split view" button on the Changes card shows old lines on the left and new lines
+on the right. A run of removed lines pairs, line by line, with the added lines that
+follow it. Context lines show on both sides. File heads and hunk heads span both
+sides. The page keeps the choice in `localStorage`, like the theme and the Steps view.
+
+`app.js` colours keywords, strings, comments and numbers with a small rule set per
+file type: Python, JavaScript and TypeScript, JSON, YAML and Markdown. The file
+extension picks the rules. Each line is coloured on its own, so a string or comment
+that spans lines stays plain. Added and removed lines now take a tinted background,
+and the sign keeps the green or red. The colours are theme tokens, checked for
+contrast in light and dark.
+
+No library is added and the server does not change: `GET /api/runs/<id>/diff` sends
+the same patch.
+
+### Consequences
+
+The dashboard still loads only its own script and stylesheet, so the content policy
+stays `default-src 'self'`. Other file types show plain text. No new write action is
+added.
+
 ## ADR-067: Keep each state move of a run, and show the stages on the run page
 
 Status: accepted on 2026-10-19.

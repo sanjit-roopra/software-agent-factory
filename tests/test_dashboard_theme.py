@@ -28,6 +28,11 @@ TOKEN_NAMES = (
     "--warn",
     "--error",
     "--focus",
+    "--syn-kw",
+    "--syn-str",
+    "--syn-num",
+    "--diff-add-bg",
+    "--diff-del-bg",
 )
 
 _BLOCK_SELECTORS = {
@@ -226,6 +231,8 @@ STORAGE_FUNCTIONS = (
     ("setItem", "storeTheme", "THEME_STORAGE_KEY"),
     ("getItem", "readStepsDetail", "STEPS_DETAIL_KEY"),
     ("setItem", "storeStepsDetail", "STEPS_DETAIL_KEY"),
+    ("getItem", "readDiffSplit", "DIFF_VIEW_KEY"),
+    ("setItem", "storeDiffSplit", "DIFF_VIEW_KEY"),
 )
 
 
