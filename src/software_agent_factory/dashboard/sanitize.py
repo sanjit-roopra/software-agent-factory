@@ -654,7 +654,7 @@ def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str,
     count = data.get("tool_call_count")
     call["tool_call_count"] = count if is_count(count) else len(call["tool_calls"])
     call["last_output_at"] = _timestamp(data.get("last_output_at"))
-    call["timeout_seconds"] = n if is_count(n := data.get("timeout_seconds")) and n else None
+    call["timeout_seconds"] = _positive_int(data.get("timeout_seconds"))
     return call
 
 
