@@ -4224,17 +4224,20 @@
   // ---- Changes: a small syntax colour and the split view -------------------
 
   // One line at a time, so a string or comment that spans lines is not coloured.
-  // The patterns are strings, not regex literals, so the test reader can parse them.
-  const SYNTAX_STRING = "\"(?:\\\\.|[^\"\\\\])*\"|'(?:\\\\.|[^'\\\\])*'";
-  const SYNTAX_NUMBER = "\\b\\d+(?:\\.\\d+)?\\b";
+  // The patterns are raw strings, not regex literals, so the test reader can parse them.
+  const SYNTAX_STRING = String.raw`"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'`;
+  const SYNTAX_NUMBER = String.raw`\b\d+(?:\.\d+)?\b`;
+  const SYNTAX_NAME = String.raw`[A-Za-z_$][\w$]*`;
   const JS_WORDS = "async await break case catch class const continue default delete do else export extends false finally for from function if import in instanceof interface let new null return static switch this throw true try type typeof undefined var void while yield";
   const SYNTAX_RULES = {
     py: { comment: "#.*", words: "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return self True try while with yield" },
-    js: { comment: "//.*|/\\*.*?\\*/", words: JS_WORDS, extra: "|`(?:\\\\.|[^`\\\\])*`" },
+    js: { comment: String.raw`//.*|/\*.*?\*/`, words: JS_WORDS, extra: "|`[^`]*`" },
     json: { comment: "", words: "true false null" },
-    yaml: { comment: "#.*", words: "true false null yes no on off", key: "^\\s*-?\\s*[\\w.-]+(?=:)" },
+    yaml: { comment: "#.*", words: "true false null yes no on off", key: String.raw`^\s*-?\s*[\w.-]+(?=:)` },
     md: { comment: "", words: "", key: "^#{1,6} .*", extra: "|`[^`]*`" }
   };
+  // One compiled pattern per language, built on first use.
+  const SYNTAX_PATTERNS = new Map();
   const SYNTAX_EXTENSIONS = {
     py: "py", js: "js", mjs: "js", cjs: "js", ts: "js", tsx: "js", jsx: "js",
     json: "json", yml: "yaml", yaml: "yaml", md: "md"
@@ -4252,8 +4255,11 @@
     if (!rules) {
       return [["", text]];
     }
-    const groups = [rules.key || "(?!)", rules.comment || "(?!)", SYNTAX_STRING + (rules.extra || ""), SYNTAX_NUMBER, "[A-Za-z_$][\\w$]*"];
-    const pattern = new RegExp(groups.map(function (group) { return "(" + group + ")"; }).join("|"), "g");
+    if (!SYNTAX_PATTERNS.has(language)) {
+      const groups = [rules.key || "(?!)", rules.comment || "(?!)", SYNTAX_STRING + (rules.extra || ""), SYNTAX_NUMBER, SYNTAX_NAME];
+      SYNTAX_PATTERNS.set(language, new RegExp(groups.map(function (group) { return "(" + group + ")"; }).join("|"), "g"));
+    }
+    const pattern = SYNTAX_PATTERNS.get(language);
     const words = new Set(rules.words.split(" "));
     const pieces = [];
     const push = function (kind, piece) {
