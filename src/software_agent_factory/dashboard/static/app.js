@@ -4221,12 +4221,190 @@
 
   const DIFF_LINE_CLASSES = { "+": "diff-add", "-": "diff-del", "@": "diff-hunk" };
 
-  // Each line in its own span, so added and removed lines take their colour.
-  function fillDiffText(pre, text) {
-    for (const line of text.split("\n")) {
-      const kind = line.startsWith("+++") || line.startsWith("---") ? "" : DIFF_LINE_CLASSES[line[0]];
-      pre.appendChild(element("span", kind || "", line + "\n"));
+  // ---- Changes: a small syntax colour and the split view -------------------
+
+  // One line at a time, so a string or comment that spans lines is not coloured.
+  // The patterns are raw strings, not regex literals, so the test reader can parse them.
+  const SYNTAX_STRING = String.raw`"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'`;
+  const SYNTAX_NUMBER = String.raw`\b\d+(?:\.\d+)?\b`;
+  const SYNTAX_NAME = String.raw`[A-Za-z_$][\w$]*`;
+  const JS_WORDS = "async await break case catch class const continue default delete do else export extends false finally for from function if import in instanceof interface let new null return static switch this throw true try type typeof undefined var void while yield";
+  const SYNTAX_RULES = {
+    py: { comment: "#.*", words: "and as assert async await break class continue def del elif else except False finally for from global if import in is lambda None nonlocal not or pass raise return self True try while with yield" },
+    js: { comment: String.raw`//.*|/\*.*?\*/`, words: JS_WORDS, extra: "|`[^`]*`" },
+    json: { comment: "", words: "true false null" },
+    yaml: { comment: "#.*", words: "true false null yes no on off", key: String.raw`^\s*-?\s*[\w.-]+(?=:)` },
+    md: { comment: "", words: "", key: "^#{1,6} .*", extra: "|`[^`]*`" }
+  };
+  // One compiled pattern per language, built on first use.
+  const SYNTAX_PATTERNS = new Map();
+  const SYNTAX_EXTENSIONS = {
+    py: "py", js: "js", mjs: "js", cjs: "js", ts: "js", tsx: "js", jsx: "js",
+    json: "json", yml: "yaml", yaml: "yaml", md: "md"
+  };
+
+  function syntaxLanguage(path) {
+    const name = String(path || "").toLowerCase();
+    const dot = name.lastIndexOf(".");
+    return dot < 0 ? null : SYNTAX_EXTENSIONS[name.slice(dot + 1)] || null;
+  }
+
+  // [class, text] pieces of one code line: "syn-kw", "syn-str", "syn-com", "syn-num" or "".
+  function syntaxTokens(text, language) {
+    const rules = SYNTAX_RULES[language];
+    if (!rules) {
+      return [["", text]];
     }
+    if (!SYNTAX_PATTERNS.has(language)) {
+      const groups = [rules.key || "(?!)", rules.comment || "(?!)", SYNTAX_STRING + (rules.extra || ""), SYNTAX_NUMBER, SYNTAX_NAME];
+      SYNTAX_PATTERNS.set(language, new RegExp(groups.map(function (group) { return "(" + group + ")"; }).join("|"), "g"));
+    }
+    const pattern = SYNTAX_PATTERNS.get(language);
+    const words = new Set(rules.words.split(" "));
+    const pieces = [];
+    const push = function (kind, piece) {
+      const last = pieces.at(-1);
+      if (last && last[0] === kind) {
+        last[1] += piece;
+      } else if (piece) {
+        pieces.push([kind, piece]);
+      }
+    };
+    let index = 0;
+    for (const match of text.matchAll(pattern)) {
+      push("", text.slice(index, match.index));
+      let kind = ["syn-kw", "syn-com", "syn-str", "syn-num"][match.slice(1, 5).findIndex(Boolean)] || "";
+      if (match[5] !== undefined) {
+        kind = words.has(match[5]) ? "syn-kw" : "";
+      }
+      push(kind, match[0]);
+      index = match.index + match[0].length;
+    }
+    push("", text.slice(index));
+    return pieces;
+  }
+
+  // Rows of the split view. Lines before the first hunk and hunk heads span both sides;
+  // a run of removed lines pairs, line by line, with the added lines that follow it.
+  function splitDiffRows(text) {
+    const rows = [];
+    let removed = [];
+    let added = [];
+    let inHunks = false;
+    const flush = function () {
+      for (let index = 0; index < Math.max(removed.length, added.length); index += 1) {
+        rows.push({ left: removed[index] ?? null, right: added[index] ?? null });
+      }
+      removed = [];
+      added = [];
+    };
+    for (const line of text.split("\n")) {
+      inHunks = inHunks || line.startsWith("@@");
+      const sign = line[0];
+      if (inHunks && sign === "-") {
+        if (added.length > 0) {
+          flush();
+        }
+        removed.push(line);
+      } else if (inHunks && sign === "+") {
+        added.push(line);
+      } else {
+        flush();
+        rows.push(inHunks && sign === " " ? { left: line, right: line } : { full: line });
+      }
+    }
+    flush();
+    return rows;
+  }
+
+  // One diff line: the sign keeps the add or remove colour, the code is coloured by language.
+  function diffLineNode(tag, line, language, inHunks) {
+    const sign = line[0];
+    const kind = inHunks ? DIFF_LINE_CLASSES[sign] || "" : "diff-meta";
+    const node = element(tag, kind);
+    if (!inHunks || sign === "@" || sign === "\\") {
+      node.textContent = line;
+      return node;
+    }
+    node.appendChild(element("span", "diff-sign", line.slice(0, 1)));
+    for (const [cls, piece] of syntaxTokens(line.slice(1), language)) {
+      node.appendChild(cls ? element("span", cls, piece) : document.createTextNode(piece));
+    }
+    return node;
+  }
+
+  function fillDiffText(pre, text, language) {
+    let inHunks = false;
+    for (const line of text.split("\n")) {
+      inHunks = inHunks || line.startsWith("@@");
+      pre.append(diffLineNode("span", line, language, inHunks), "\n");
+    }
+  }
+
+  function fillDiffSplit(pre, text, language) {
+    let inHunks = false;
+    for (const row of splitDiffRows(text)) {
+      if (row.full !== undefined) {
+        inHunks = inHunks || row.full.startsWith("@@");
+        pre.appendChild(diffLineNode("div", row.full, language, inHunks)).classList.add("diff-full");
+        continue;
+      }
+      for (const side of [row.left, row.right]) {
+        pre.appendChild(side === null ? element("div", "diff-empty") : diffLineNode("div", side, language, true));
+      }
+    }
+  }
+
+  // The Changes card shows one column, or old and new side by side; the page remembers it.
+  const DIFF_VIEW_KEY = "factory-dashboard-diff-view";
+
+  function readDiffSplit() {
+    try {
+      return globalThis.localStorage.getItem(DIFF_VIEW_KEY) === "split";
+    } catch {
+      // Storage is blocked, so the unified view shows.
+      return false;
+    }
+  }
+
+  function diffIsSplit() {
+    return document.getElementById("diff-view-toggle").getAttribute("aria-pressed") === "true";
+  }
+
+  function showDiffSplit(split) {
+    const button = document.getElementById("diff-view-toggle");
+    button.setAttribute("aria-pressed", String(split));
+    setText(button, split ? "Unified view" : "Split view");
+    for (const item of document.querySelectorAll("#diff-body .diff-file")) {
+      item.dispatchEvent(new Event("toggle"));
+    }
+  }
+
+  function storeDiffSplit(split) {
+    try {
+      globalThis.localStorage.setItem(DIFF_VIEW_KEY, split ? "split" : "unified");
+    } catch {
+      // Storage is blocked: the choice lasts for this page view only.
+    }
+  }
+
+  function toggleDiffSplit() {
+    const split = !diffIsSplit();
+    showDiffSplit(split);
+    storeDiffSplit(split);
+  }
+
+  // Draw an open file in the current view, once per view.
+  function drawDiffFile(item, pre, file) {
+    const view = diffIsSplit() ? "split" : "unified";
+    if (!item.open || pre.dataset.view === view) {
+      return;
+    }
+    pre.replaceChildren();
+    pre.dataset.view = view;
+    pre.classList.toggle("diff-split", view === "split");
+    const language = syntaxLanguage(file.path);
+    (view === "split" ? fillDiffSplit : fillDiffText)(pre, file.patch, language);
   }
 
   function countsText(item) {
@@ -4246,11 +4424,7 @@
       setText(pre, "This file is past the size limit, so its text is not shown.");
       return item;
     }
-    item.addEventListener("toggle", function () {
-      if (item.open && pre.childElementCount === 0) {
-        fillDiffText(pre, file.patch);
-      }
-    });
+    item.addEventListener("toggle", function () { drawDiffFile(item, pre, file); });
     return item;
   }
 
@@ -5350,6 +5524,8 @@
     });
     document.getElementById("steps-view-toggle").addEventListener("click", toggleStepsDetail);
     showStepsDetail(readStepsDetail());
+    document.getElementById("diff-view-toggle").addEventListener("click", toggleDiffSplit);
+    showDiffSplit(readDiffSplit());
     document.getElementById("theme-toggle").addEventListener("click", function () {
       const next = otherTheme(currentTheme());
       applyTheme(next);

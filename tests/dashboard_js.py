@@ -22,7 +22,7 @@ from typing import Final, NamedTuple
 
 import pytest
 
-_QUOTES = "\"'"
+_QUOTES = "\"'`"
 
 
 def normalized(text: str) -> str:
@@ -138,7 +138,7 @@ def listener_source(js: str, function: str, target: str, event: str) -> str:
 # --------------------------------------------------------------------------
 
 _DEFINITION = re.compile(r"^  ((?:function (\w+)\(|(?:const|let) (\w+) =))", re.MULTILINE)
-_STRING = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'")
+_STRING = re.compile(r"\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*'|`(?:\\.|[^`\\])*`")
 # A name after one ``.`` is a property. A name after ``...`` is a spread, so it counts.
 _IDENTIFIER = re.compile(r"(?:(?<![\w.$])|(?<=\.\.\.))[A-Za-z_]\w*")
 _NODE_TIMEOUT_SECONDS = 30

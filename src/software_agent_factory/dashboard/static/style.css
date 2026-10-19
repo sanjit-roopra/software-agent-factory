@@ -24,6 +24,11 @@
   --warn: #a84d08;
   --error: #b91c1c;
   --focus: #1d4ed8;
+  --syn-kw: #6d28d9;
+  --syn-str: #0f766e;
+  --syn-num: #a14a00;
+  --diff-add-bg: #e6f4ea;
+  --diff-del-bg: #fde8e8;
 }
 :root[data-theme="dark"] {
   color-scheme: dark;
@@ -39,6 +44,11 @@
   --warn: #fbbf24;
   --error: #f87171;
   --focus: #7aa2ff;
+  --syn-kw: #c4b5fd;
+  --syn-str: #5eead4;
+  --syn-num: #fdba74;
+  --diff-add-bg: #12261c;
+  --diff-del-bg: #2c1416;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme]) {
@@ -55,6 +65,11 @@
     --warn: #fbbf24;
     --error: #f87171;
     --focus: #7aa2ff;
+    --syn-kw: #c4b5fd;
+    --syn-str: #5eead4;
+    --syn-num: #fdba74;
+    --diff-add-bg: #12261c;
+    --diff-del-bg: #2c1416;
   }
 }
 * { box-sizing: border-box; }
@@ -645,9 +660,21 @@ button:disabled {
 .diff-counts { margin-left: auto; font-family: var(--font-mono); font-size: var(--fs-sm); color: var(--text-muted); }
 .diff-file .chip { margin-left: 0; }
 .diff-text { white-space: pre; overflow-wrap: normal; max-height: 32rem; }
-.diff-add { color: var(--ok); }
-.diff-del { color: var(--error); }
+.diff-head button { margin-left: auto; }
+.diff-add { background: var(--diff-add-bg); }
+.diff-del { background: var(--diff-del-bg); }
+.diff-add .diff-sign { color: var(--ok); }
+.diff-del .diff-sign { color: var(--error); }
 .diff-hunk { color: var(--accent); }
+.diff-meta { color: var(--text-muted); }
+.diff-text.diff-split { display: grid; grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); column-gap: 1px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.diff-split .diff-full { grid-column: 1 / -1; }
+.diff-text:not(.diff-split) > span { display: inline-block; min-width: 100%; }
+.diff-empty { background: var(--surface-2); }
+.syn-kw { color: var(--syn-kw); }
+.syn-str { color: var(--syn-str); }
+.syn-com { color: var(--text-muted); font-style: italic; }
+.syn-num { color: var(--syn-num); }
 .plan-text { margin: 0.25rem 0 0; white-space: pre-wrap; }
 .plan-steps { margin: 0.5rem 0 0; padding-left: 1.25rem; }
 .plan-steps li { margin: 0.35rem 0; }
