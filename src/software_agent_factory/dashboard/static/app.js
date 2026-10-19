@@ -209,7 +209,7 @@
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
-    baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null,
+    baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null, recordReasons: {},
     evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
     evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
     search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
@@ -734,6 +734,10 @@
     }
     if (isPlainObject(entry) && entry.badge !== undefined) {
       patchBadgeCell(cell, entry);
+      return;
+    }
+    if (isPlainObject(entry) && entry.reason !== undefined) {
+      patchReasonCell(cell, entry);
       return;
     }
     const isObject = entry !== null && typeof entry === "object";
@@ -1728,7 +1732,10 @@
     ];
   }
 
-  function attemptRowSpec(attempt) {
+  function attemptRowSpec(attempt, runId) {
+    const query = "attempt=" + attempt.attempt_number;
+    const reason = recordReason(runId, query, attempt.failure_reason,
+      attempt.failure_reason_truncated);
     return {
       cells: [
         attempt.attempt_number,
@@ -1739,7 +1746,7 @@
         attempt.outcome,
         attempt.started_at,
         attempt.completed_at,
-        { value: attempt.failure_reason, className: "reason-cell" }
+        { value: reason.text, className: "reason-cell", reason: reason }
       ]
     };
   }
@@ -1976,6 +1983,19 @@
     ];
   }
 
+  // The call's reason row shows the whole text once it has loaded.
+  function callFieldsWithReason(call, runId, reason) {
+    const fields = callFields(call, runId);
+    if (reason.text === call.failure_reason) {
+      return fields;
+    }
+    return fields.filter(function (field) {
+      return field[0] !== "Reason was cut";
+    }).map(function (field) {
+      return field[0] === "Failure reason" ? [field[0], reason.text] : field;
+    });
+  }
+
   function fallbackFields(reason) {
     return typeof reason === "string" && reason !== "" ? [["Why it fell back", reason]] : [];
   }
@@ -2120,7 +2140,7 @@
     detail.hidden = true;
     const cell = detail.appendChild(element("td"));
     cell.colSpan = CALL_COLUMN_COUNT;
-    cell.append(element("dl", "call-fields"), buildTranscript());
+    cell.append(element("dl", "call-fields"), reasonButton(), buildTranscript());
     return row;
   }
 
@@ -2227,7 +2247,10 @@
     row.children[OUTCOME_CELL].className = callOutcome(call).className;
     row.classList.toggle("call-rejected", call.failure_link === "rejected");
     const fields = row.nextElementSibling.firstElementChild.firstElementChild;
-    syncDefinitionList(fields, callFields(call, runId));
+    const query = "call=" + call.invocation_number;
+    const reason = recordReason(runId, query, call.failure_reason, call.failure_reason_truncated);
+    syncDefinitionList(fields, callFieldsWithReason(call, runId, reason));
+    syncReasonButton(fields.nextElementSibling, reason);
   }
 
   // Each cost unit the calls reported, each in its own unit.
@@ -2815,6 +2838,7 @@
   };
 
   const SHOW_REASON_LABEL = "Show full failure reason";
+  const RECORD_QUERY = /^(attempt|call)=[1-9]\d{0,3}$/;
 
   // ---- Run detail: stop (ADR-047) -----------------------------------------
 
@@ -3457,6 +3481,67 @@
       });
   }
 
+  // ---- Run detail: attempt and call reasons (ADR-062) ---------------------
+
+  // The reason to show for one attempt or call: the whole text once loaded for the same
+  // cut text, and whether "Show full failure reason" can still load it. A record without
+  // a number cannot be asked for.
+  function recordReason(runId, query, reason, truncated) {
+    const cut = truncated === true && typeof reason === "string" && runId !== null &&
+      RECORD_QUERY.test(query);
+    const cached = cut ? state.recordReasons[runId + "?" + query] : undefined;
+    const full = cached?.cut === reason ? cached.text : null;
+    return { text: full ?? reason, query: query, shown: reason, cut: cut && full === null };
+  }
+
+  function reasonButton() {
+    const button = actionButton(SHOW_REASON_LABEL, "button");
+    button.className = "reason-more";
+    button.hidden = true;
+    button.addEventListener("click", function () {
+      showRecordReason(button);
+    });
+    return button;
+  }
+
+  function syncReasonButton(button, reason) {
+    button.hidden = !reason.cut;
+    button.dataset.query = reason.query;
+    button.dataset.shown = reason.cut ? reason.shown : "";
+  }
+
+  // A cut attempt reason keeps its text in the first span and its button after it.
+  function patchReasonCell(cell, entry) {
+    if (cell.firstElementChild?.className !== "reason-value") {
+      clearChildren(cell);
+      cell.append(element("span", "reason-value"), reasonButton());
+    }
+    setText(cell.firstElementChild, displayValue(entry.value));
+    syncReasonButton(cell.lastElementChild, entry.reason);
+    cell.className = entry.className || "";
+    setTitle(cell, undefined);
+  }
+
+  // Loads one attempt's or call's whole reason, then draws the run again with it.
+  function showRecordReason(button) {
+    const runId = state.runId;
+    const query = button.dataset.query;
+    const cut = button.dataset.shown;
+    button.disabled = true;
+    apiFetch(reasonPath(runId) + "?" + query)
+      .then(function (body) {
+        if (state.runId === runId && typeof body.failure_reason === "string") {
+          state.recordReasons[runId + "?" + query] = { cut: cut, text: body.failure_reason };
+          void refreshView();
+        }
+      }, function () {
+        setActionMessage("The full failure reason could not load.");
+      })
+      .finally(function () {
+        button.disabled = false;
+      });
+  }
+
   // The details list leaves out a row that has nothing to show.
   function isBlankField(field) {
     const value = field[1];
@@ -3483,7 +3568,9 @@
       fields.filter(function (field) { return !isBlankField(field); })
     );
     syncRows(
-      document.getElementById("attempts-body"), asArray(detail.attempts).map(attemptRowSpec)
+      document.getElementById("attempts-body"), asArray(detail.attempts).map(function (attempt) {
+        return attemptRowSpec(attempt, runId);
+      })
     );
     syncStats(document.getElementById("run-totals"), totalsCards(detail.totals || {}));
     renderTimeline(detail, runId);
@@ -4440,6 +4527,7 @@
       state.diffKey = null;
       state.runDetail = null;
       state.evidence = { plan: null, diff: null };
+      state.recordReasons = {};
     }
     state.runId = runId;
     applyRunsFilter(route.filter ?? null, route.offset ?? 0);

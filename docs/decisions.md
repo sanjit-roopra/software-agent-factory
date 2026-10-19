@@ -1,5 +1,29 @@
 # Architecture Decisions
 
+## ADR-062: The dashboard can show a full attempt or call failure reason
+
+Status: accepted on 2026-10-19. This amends ADR-046.
+
+### Context
+
+ADR-046 lets the operator read the whole run failure reason on the page.
+Attempt and call reasons stayed cut at 500 characters, and the table named `factory show` for the rest.
+A failed attempt or a failed agent call often holds the useful error, so the operator still had to use the terminal.
+
+### Decision
+
+- `GET /api/runs/<id>/reason` takes `?attempt=n` or `?call=n`.
+  It then returns the reason of the attempt with that number, or of the call with that number, and nothing else.
+- The number is 1 to 9999, with no sign or leading zero. Both keys together, a bad number or a record the run does not have get `404`.
+- The same sanitizer redacts the reason first and cuts it only past 20,000 characters, as ADR-046 says.
+- A cut reason in the Attempts table and in a call's details on the Steps timeline shows a **Show full failure reason** button.
+  The loaded text replaces the cut text until the run shows a different reason.
+
+### Consequences
+
+- The operator reads every failure reason on the page, behind the same token and loopback rules.
+- The route stays read only. It reads the same run detail the page already reads.
+
 ## ADR-061: Retry CI repair from the dashboard
 
 Status: accepted on 2026-10-19. This is the fourth class that ADR-057 planned.

@@ -32,8 +32,9 @@ from .evidence import (
     sanitize_run_plan,
     sanitize_run_review,
 )
+from .reason_route import reason_source, sanitize_full_reason
 from .responses import WriteRejected
-from .sanitize import sanitize_full_reason, sanitize_health, sanitize_run_detail
+from .sanitize import sanitize_health, sanitize_run_detail
 from .security import (
     TOKEN_QUERY_PARAM,
     header_token_matches,
@@ -62,10 +63,7 @@ _logger = logging.getLogger("software_agent_factory.dashboard")
 
 
 def _log_failure_type(message: str, exc: BaseException, *args: object) -> None:
-    """Log a failure by its exception type only.
-
-    The message and traceback can quote run data or a plan answer, so neither reaches the log.
-    """
+    """Log a failure by its exception type only: its message can quote run data or an answer."""
     _logger.error(message + ": %s", *args, type(exc).__name__)
 
 
@@ -477,7 +475,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         reason_match = _RUN_REASON_PATTERN.match(path)
         if reason_match:
-            self._serve_run_reason(reason_match.group(1), send_body)
+            self._serve_run_reason(reason_match.group(1), query, send_body)
             return
         evidence_match = _RUN_EVIDENCE_PATTERN.match(path)
         if evidence_match:
@@ -630,11 +628,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 sanitized.pop("escalation_route", None)
             self._respond_json(HTTPStatus.OK, sanitized, send_body)
 
-    def _serve_run_reason(self, raw_run_id: str, send_body: bool) -> None:
-        if not is_valid_run_id(raw_run_id):
+    def _serve_run_reason(self, run_id: str, query: dict[str, list[str]], send_body: bool) -> None:
+        source = reason_source(self.server.run_detail_provider, query)
+        if source is None or not is_valid_run_id(run_id):
             self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
             return
-        reason = self._load_run(raw_run_id, sanitize_full_reason, send_body)
+        reason = self._load_run(run_id, sanitize_full_reason, send_body, source)
         if reason is not None:
             self._respond_json(HTTPStatus.OK, reason, send_body)
 

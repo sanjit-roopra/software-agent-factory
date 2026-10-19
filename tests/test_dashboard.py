@@ -42,11 +42,11 @@ from software_agent_factory.dashboard.handler import (
     _log_safe_method,
     _log_safe_path,
 )
+from software_agent_factory.dashboard.reason_route import FULL_REASON_LIMIT, sanitize_full_reason
 from software_agent_factory.dashboard.sanitize import (
     ACTIVE_INVOCATION_FIELDS,
     ACTIVE_INVOCATION_STATUSES,
     ATTEMPT_FIELDS,
-    FULL_REASON_LIMIT,
     INVOCATION_FIELDS,
     MAX_NEEDS_LOOK_ITEMS,
     PROJECT_FIELDS,
@@ -57,7 +57,6 @@ from software_agent_factory.dashboard.sanitize import (
     is_active_status,
     sanitize_active_invocation,
     sanitize_attempt,
-    sanitize_full_reason,
     sanitize_invocation,
     sanitize_project,
     sanitize_run_detail,

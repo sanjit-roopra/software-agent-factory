@@ -415,7 +415,9 @@ named write actions, not a control plane.
   renders. A future provider mistake still cannot leak content.
 - Failure reasons and escalation text are redacted first, then cut to 500
   characters with the start and the end kept. A cut reason names
-  `factory show <run>` for the full text (ADR-033).
+  `factory show <run>` for the full text (ADR-033). The page can also load
+  the whole reason of the run, of one attempt or of one call, cut only past
+  20,000 characters (ADR-046, ADR-062).
 - A write needs the token in a header. A token in the address or in the
   cookie never counts alone. It also needs the exact `Origin`, a JSON body of at most 16 KB, and the run's
   current episode and context fingerprint. The page asks you to confirm an

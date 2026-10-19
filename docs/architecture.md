@@ -1586,7 +1586,8 @@ future provider mistake still cannot leak content. The sanitizer redacts each
 failure reason and the escalation text first, then cuts it to 500 characters
 and keeps the start and the end (ADR-033). The page can ask
 `GET /api/runs/<id>/reason` for the whole redacted run reason, cut only past
-20,000 characters (ADR-046). The Checks card asks `GET /api/runs/<id>/checks`
+20,000 characters (ADR-046). With `?attempt=n` or `?call=n` the same route
+returns the whole reason of one attempt or one call (ADR-062). The Checks card asks `GET /api/runs/<id>/checks`
 for each verification and CI check with the last 80 lines of its output, at
 most 8 KB. The Review card asks `GET /api/runs/<id>/review` for each review
 round and the open and accepted findings, each text cut to 2,000 characters.
