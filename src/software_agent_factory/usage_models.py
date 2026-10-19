@@ -299,6 +299,8 @@ class ActiveInvocation(ModelBase):
     tool_call_count: int = Field(default=0, ge=0)
     #: When the call last printed a line of output; only a streaming runtime sets it.
     last_output_at: UtcDateTime | None = None
+    #: The time limit the runtime gave this call; ``None`` on a run file written before it.
+    timeout_seconds: int | None = Field(default=None, ge=1)
 
 
 class AttemptRecord(ModelBase):

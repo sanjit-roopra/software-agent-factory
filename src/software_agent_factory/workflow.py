@@ -1620,7 +1620,6 @@ class WorkflowController:
         reraise_runtime_errors: bool = False,
     ) -> AgentResult:
         """Run one agent and persist its routing and reported usage."""
-
         started_at = utc_now()
         invocation_number = len(run.invocation_records) + 1
         run.active_invocation = ActiveInvocation(
@@ -1633,6 +1632,7 @@ class WorkflowController:
             started_at=started_at,
             attempt_number=request.attempt_number,
             budget=budget,
+            timeout_seconds=request.timeout_seconds,
         )
         run.updated_at = started_at
         run.last_activity_at = started_at

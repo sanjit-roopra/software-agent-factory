@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+import pytest
 from dashboard_js import JsCall, run_functions
 from factory_testing import FakePiProcess, build_config
 from prompt_fixtures import make_request
@@ -209,6 +210,7 @@ def test_the_run_file_shows_the_tool_calls_before_the_call_ends(
 
     assert run.state is WorkflowState.PR_READY
     assert runtime.stored is not None
+    assert runtime.stored.timeout_seconds == controller._config.agent_timeout_seconds
     assert runtime.stored.recent_tool_calls == [
         {"name": "bash", "preview": "pytest -q"},
         {"name": "read", "preview": "src/app.py"},
@@ -221,15 +223,17 @@ def test_the_run_file_shows_the_tool_calls_before_the_call_ends(
 def test_the_summary_and_the_sanitized_call_carry_the_tail() -> None:
     run = FactoryRun(id="run-sum", work_item_id="w", state=WorkflowState.IMPLEMENTING)
     tail = [{"name": "bash", "preview": "/Users/me/repo/x.sh ghp_" + "b" * 36}]
-    run.active_invocation = _active(recent_tool_calls=tail, tool_call_count=9)
+    run.active_invocation = _active(recent_tool_calls=tail, tool_call_count=9, timeout_seconds=900)
 
     summary = build_active_invocation_summary(run, now=_STARTED)
     assert summary is not None
     assert summary.tool_calls == tail
     assert summary.tool_call_count == 9
+    assert summary.timeout_seconds == 900
 
     call = sanitize_active_invocation(summary.model_dump(mode="json"))
     assert call["tool_call_count"] == 9
+    assert call["timeout_seconds"] == 900
     assert call["tool_calls"][0]["name"] == "bash"
     assert "ghp_" not in call["tool_calls"][0]["preview"]
     assert "/Users/me" not in call["tool_calls"][0]["preview"]
@@ -283,5 +287,38 @@ def test_the_status_line_shows_the_tool_count_and_the_last_tool() -> None:
             "text": "27 tools · last: bash  ls",
             "title": "read  a.py\nbash  ls",
             "className": "live-tool",
+        },
+    ]
+
+
+@pytest.mark.parametrize("value", [None, 0, -5, "900", True, 1.5])
+def test_a_missing_or_bad_call_timeout_is_dropped(value: Any) -> None:
+    assert sanitize_active_invocation({"timeout_seconds": value})["timeout_seconds"] is None
+
+
+def test_the_status_line_shows_the_call_timeout_and_warns_past_80_percent() -> None:
+    start = "2026-01-01T00:00:00Z"
+    start_ms = int(_STARTED.timestamp() * 1000)
+    active = {"started_at": start, "timeout_seconds": 900}
+    results = run_functions(
+        dashboard_assets.APP_JS,
+        (
+            JsCall("timeoutPart", ({"started_at": start}, start_ms)),
+            JsCall("timeoutPart", (active, start_ms + 600_000)),
+            JsCall("timeoutPart", (active, start_ms + 720_000)),
+        ),
+    )
+
+    assert [result.value for result in results] == [
+        None,
+        {
+            "text": "/ timeout 15 min 0 s",
+            "title": "The call stops at this limit",
+            "className": "",
+        },
+        {
+            "text": "/ timeout 15 min 0 s",
+            "title": "Over 80% of the call time limit has passed",
+            "className": "status-warn",
         },
     ]

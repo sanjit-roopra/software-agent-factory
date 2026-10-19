@@ -223,10 +223,11 @@ INVOCATION_FIELDS: frozenset[str] = frozenset(
     }
 )
 
-#: The active call: a finished call's shape without telemetry, plus a tool count and last output.
+#: The active call: a finished call's shape without telemetry, plus tool count, output, limit.
 ACTIVE_INVOCATION_FIELDS: frozenset[str] = (INVOCATION_FIELDS - {"performance"}) | {
     "tool_call_count",
     "last_output_at",
+    "timeout_seconds",
 }
 
 _RUNTIME_NAMES: frozenset[str] = frozenset(runtime.value for runtime in RuntimeName)
@@ -259,8 +260,7 @@ _ACTIVE_INPUT_KEYS = (
     "tool_calls",
 )
 
-#: ``usage_value_usd`` is derived from ``total_nano_aiu``; a provider value for
-#: it is never read, so it stays out of the allowlist.
+#: Derived from ``total_nano_aiu``, so a provider value is never read or allowed.
 _DERIVED_USAGE_FIELDS: frozenset[str] = frozenset({"usage_value_usd"})
 
 USAGE_FIELDS: frozenset[str] = (
@@ -622,11 +622,10 @@ def _sanitize_tool_calls(raw: Any) -> list[dict[str, str]]:
     """Each tool call as a redacted, bounded name and one-line preview."""
     if not isinstance(raw, list):
         return []
-    calls = (item for item in raw[:MAX_CALL_TOOL_CALLS] if isinstance(item, dict))
     return [
         {"name": _tool_text(item.get("name")), "preview": _tool_text(item.get("preview"))}
-        for item in calls
-        if _tool_text(item.get("name"))
+        for item in raw[:MAX_CALL_TOOL_CALLS]
+        if isinstance(item, dict) and _tool_text(item.get("name"))
     ]
 
 
@@ -655,6 +654,7 @@ def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str,
     count = data.get("tool_call_count")
     call["tool_call_count"] = count if is_count(count) else len(call["tool_calls"])
     call["last_output_at"] = _timestamp(data.get("last_output_at"))
+    call["timeout_seconds"] = n if is_count(n := data.get("timeout_seconds")) and n else None
     return call
 
 

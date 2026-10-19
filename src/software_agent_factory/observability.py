@@ -377,6 +377,7 @@ class ActiveInvocationSummary(ModelBase):
     tool_call_count: int = Field(default=0, ge=0)
     """Every tool call the call started so far."""
     last_output_at: UtcDateTime | None = None
+    timeout_seconds: int | None = Field(default=None, ge=1)
 
 
 class RunGuidance(ModelBase):
@@ -1399,13 +1400,12 @@ def build_active_invocation_summary(
         tool_calls=list(active.recent_tool_calls),
         tool_call_count=active.tool_call_count,
         last_output_at=active.last_output_at,
+        timeout_seconds=active.timeout_seconds,
     )
 
 
 def _active_invocation_status(
-    run: FactoryRun,
-    now: datetime,
-    stale_after: timedelta,
+    run: FactoryRun, now: datetime, stale_after: timedelta
 ) -> ActiveInvocationStatus:
     lease = run.lease
     if lease is None:

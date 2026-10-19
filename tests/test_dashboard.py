@@ -3448,7 +3448,7 @@ def _raw_active(**overrides: Any) -> dict[str, Any]:
 def test_running_call_has_the_shape_of_a_finished_call_with_nothing_reported() -> None:
     call = sanitize_active_invocation(_raw_active())
 
-    assert list(call) == [*CALL_FIELD_ORDER, "tool_call_count", "last_output_at"]
+    assert list(call) == [*CALL_FIELD_ORDER, "tool_call_count", "last_output_at", "timeout_seconds"]
     assert call["tool_calls"] == []
     assert call["tool_call_count"] == 0
     assert call["status"] == "running"
@@ -3510,6 +3510,7 @@ def test_run_detail_api_returns_calls_in_number_order_with_the_timeline_fields(
         *CALL_FIELD_ORDER,
         "tool_call_count",
         "last_output_at",
+        "timeout_seconds",
     ]
     assert payload["invocations"][0]["duration_ms"] == 300_000
     assert payload["failure_reason"] is None
