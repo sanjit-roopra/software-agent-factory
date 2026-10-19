@@ -480,10 +480,18 @@
   }
 
   // The views without the summary read it only for the service line; a failure keeps the line.
+  // One read at a time, so a slow summary never piles up requests across polls.
+  let serviceInFlight = false;
   function refreshService() {
-    return apiFetch("/api/summary").then(function (summary) {
+    if (serviceInFlight) {
+      return;
+    }
+    serviceInFlight = true;
+    apiFetch("/api/summary").then(function (summary) {
       renderService(summary?.service);
-    }, function () {});
+    }, function () {}).finally(function () {
+      serviceInFlight = false;
+    });
   }
 
   // The Runs link counts the runs that need the operator. None hides the count.
@@ -5187,7 +5195,7 @@
     renderNotice();
     const view = state.view;
     if (view !== "runs" && view !== "health") {
-      void refreshService();
+      refreshService();
     }
     const refresher = REFRESHERS[view];
     if (!refresher || isDirty(document.getElementById(DIRTY_REGIONS[view] ?? VIEWS[view].section))) {
