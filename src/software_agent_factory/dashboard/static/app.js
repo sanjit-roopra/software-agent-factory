@@ -1,7 +1,9 @@
 (function () {
   "use strict";
 
-  const POLL_INTERVAL_MS = 5000;
+  // The poll runs fast while the open view shows a run that can still change, else slowly.
+  const POLL_ACTIVE_MS = 2000;
+  const POLL_IDLE_MS = 15000;
   const REQUEST_TIMEOUT_MS = 10000;
   const PAGE_SIZE = 20;
   const EMPTY_VALUE = "\u2014";
@@ -5216,6 +5218,37 @@
     }
   }
 
+  // Whether the open view shows a run that can still change: an active row in the run
+  // list, an active open run, or a comparison whose runs have not both finished.
+  function viewHasActiveRun(view, held) {
+    if (view === "runs") {
+      return asArray(held.shownRuns?.[0]?.runs).some(isActiveRun);
+    }
+    if (view === "run") {
+      return held.runDetail !== null && isActiveRun(held.runDetail);
+    }
+    const key = view === "compare" ? selectionKey(held.compare) : null;
+    return key !== null && held.compareLoaded.settled !== key;
+  }
+
+  function pollDelay(view, held) {
+    return viewHasActiveRun(view, held) ? POLL_ACTIVE_MS : POLL_IDLE_MS;
+  }
+
+  // A short timer chain checks every POLL_ACTIVE_MS whether the open view is due, so a
+  // run that turns active, or a newly opened active run, polls fast without waiting out
+  // a slow delay. A check that is not due sends nothing.
+  let lastPollAt = 0;
+  // The next check is set first, so an error in this one cannot stop the chain.
+  function pollTick() {
+    globalThis.setTimeout(pollTick, POLL_ACTIVE_MS);
+    const nowMs = Date.now();
+    if (nowMs - lastPollAt >= pollDelay(state.view, state)) {
+      lastPollAt = nowMs;
+      pollView();
+    }
+  }
+
   function applyRoute(moveFocus) {
     if (isUnknownHash(globalThis.location.hash)) {
       globalThis.history.replaceState(null, "", "#runs");
@@ -5804,7 +5837,8 @@
     bindControls();
     seedBackHistory();
     applyRoute(false);
-    globalThis.setInterval(pollView, POLL_INTERVAL_MS);
+    lastPollAt = Date.now();
+    globalThis.setTimeout(pollTick, POLL_ACTIVE_MS);
     globalThis.setInterval(tickTimers, TICK_INTERVAL_MS);
     document.addEventListener("visibilitychange", pollView);
   }

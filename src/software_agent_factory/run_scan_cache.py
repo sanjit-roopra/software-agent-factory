@@ -29,8 +29,8 @@ from .observability import (
 
 __all__ = ["DEFAULT_SCAN_CACHE_TTL", "RunScanCache"]
 
-# Longer than the dashboard poll (POLL_INTERVAL_MS, 5 s in dashboard/static/app.js), so
-# back-to-back polls reuse one scan instead of rescanning every tick.
+# Longer than the dashboard's fast poll (POLL_ACTIVE_MS, 2 s in dashboard/static/app.js),
+# so back-to-back polls reuse one scan instead of rescanning every tick.
 DEFAULT_SCAN_CACHE_TTL: float = 6.0
 
 #: What identifies one version of a ``run.json``: its modification time, size and

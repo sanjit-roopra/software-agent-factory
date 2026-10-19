@@ -443,6 +443,8 @@ its cost in its own units. The `/api/compare` route serves this view.
 A search box above the pickers finds any run by title, run id or issue, and the
 Newer and Older buttons page through the matches. The comparison stops polling
 once both runs are over.
+The page refreshes the open view every 2 seconds while it shows a run that is still
+going, and every 15 seconds otherwise. A hidden tab does not refresh.
 The Runs view starts with one overview row. It shows the number of runs, the
 succeeded, failed and active runs, and the runs that need you. It also shows total
 tokens and the cost of all runs. The cost is the list-price estimate in USD and the

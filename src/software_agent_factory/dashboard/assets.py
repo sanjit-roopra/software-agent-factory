@@ -7,6 +7,7 @@ no build step -- the files are exactly what a browser receives.
 
 from __future__ import annotations
 
+import hashlib
 from importlib import resources
 
 from .snapshot import MAX_PAGE_LIMIT, MAX_SEARCH_LENGTH
@@ -65,8 +66,8 @@ def render_index_html(*, token: str) -> str:
 <meta name="{TOKEN_META_NAME}" content="{token}">
 <title>Software Agent Factory &mdash; Dashboard</title>
 <link id="favicon" rel="icon" type="image/svg+xml" href="/assets/favicon.svg">
-<link rel="stylesheet" href="/assets/style.css">
-<script defer src="/assets/app.js"></script>
+<link rel="stylesheet" href="{STYLE_CSS_PATH}">
+<script defer src="{APP_JS_PATH}"></script>
 </head>
 <body>
 <div class="shell">
@@ -485,6 +486,23 @@ def _read_static(name: str) -> str:
 #: PyInstaller spec), so there is still no bundler and no build step.
 STYLE_CSS: str = _read_static("style.css")
 APP_JS: str = _read_static("app.js")
+_STYLE_CSS_BYTES = STYLE_CSS.encode("utf-8")
+_APP_JS_BYTES = APP_JS.encode("utf-8")
+
+
+def _hashed_path(name: str, body: bytes) -> str:
+    """``/assets/<stem>.<hash>.<ext>``: the URL changes whenever the body changes."""
+    stem, extension = name.rsplit(".", 1)
+    return f"/assets/{stem}.{hashlib.sha256(body).hexdigest()[:16]}.{extension}"
+
+
+#: The script and stylesheet live at URLs named by their content, so a browser may keep
+#: them for good: a new release names new URLs, and an old URL answers ``404``.
+APP_JS_PATH: str = _hashed_path("app.js", _APP_JS_BYTES)
+STYLE_CSS_PATH: str = _hashed_path("style.css", _STYLE_CSS_BYTES)
+IMMUTABLE_PATHS: frozenset[str] = frozenset({APP_JS_PATH, STYLE_CSS_PATH})
+#: Every other answer, the page and the API included, keeps ``Cache-Control: no-store``.
+IMMUTABLE_CACHE: tuple[str, str] = ("Cache-Control", "public, max-age=31536000, immutable")
 
 #: The tab icons: a plain square, and the same with an amber dot while a run needs the
 #: operator. Served from ``/assets/``, as the CSP allows images from the page's origin only.
@@ -501,8 +519,8 @@ FAVICON_ALERT_SVG: str = FAVICON_SVG.replace(
 #: subset of Inter (SIL OFL 1.1, ``static/inter-LICENSE.txt``), served from the page's own
 #: origin because the CSP allows nothing else.
 STATIC_ROUTES: dict[str, tuple[str, bytes]] = {
-    "/assets/app.js": ("text/javascript; charset=utf-8", APP_JS.encode("utf-8")),
-    "/assets/style.css": ("text/css; charset=utf-8", STYLE_CSS.encode("utf-8")),
+    APP_JS_PATH: ("text/javascript; charset=utf-8", _APP_JS_BYTES),
+    STYLE_CSS_PATH: ("text/css; charset=utf-8", _STYLE_CSS_BYTES),
     "/assets/favicon.svg": ("image/svg+xml", FAVICON_SVG.encode("utf-8")),
     "/assets/favicon-alert.svg": ("image/svg+xml", FAVICON_ALERT_SVG.encode("utf-8")),
     "/assets/inter-latin.woff2": (

@@ -94,8 +94,8 @@ _SECURITY_HEADERS: tuple[tuple[str, str], ...] = (
     ("X-Frame-Options", "DENY"),
     ("Cross-Origin-Opener-Policy", "same-origin"),
     ("Cross-Origin-Resource-Policy", "same-origin"),
-    ("Cache-Control", "no-store"),
 )
+_NO_STORE = ("Cache-Control", "no-store")
 
 _INDEX_PATH = "/"
 _RUN_DETAIL_PATTERN = re.compile(r"^/api/runs/([^/]+)$")
@@ -430,7 +430,8 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
             return
         if path in assets.STATIC_ROUTES:
             content_type, body = assets.STATIC_ROUTES[path]
-            self._respond_bytes(HTTPStatus.OK, content_type, body, send_body)
+            cache = assets.IMMUTABLE_CACHE if path in assets.IMMUTABLE_PATHS else _NO_STORE
+            self._respond_bytes(HTTPStatus.OK, content_type, body, send_body, cache=cache)
             return
         if path == "/healthz":
             self._respond_json(HTTPStatus.OK, {"status": "ok"}, send_body)
@@ -849,7 +850,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         """
         self.send_response(HTTPStatus.NOT_MODIFIED)
         self.send_header("ETag", etag)
-        for name, value in _SECURITY_HEADERS:
+        for name, value in (*_SECURITY_HEADERS, _NO_STORE):
             self.send_header(name, value)
         if self.close_connection:
             self.send_header("Connection", "close")
@@ -863,13 +864,12 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         send_body: bool,
         *,
         extra_headers: tuple[tuple[str, str], ...] = (),
+        cache: tuple[str, str] = _NO_STORE,
     ) -> None:
         self.send_response(status)
         self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
-        for name, value in _SECURITY_HEADERS:
-            self.send_header(name, value)
-        for name, value in extra_headers:
+        for name, value in (*_SECURITY_HEADERS, cache, *extra_headers):
             self.send_header(name, value)
         if self.close_connection:
             self.send_header("Connection", "close")

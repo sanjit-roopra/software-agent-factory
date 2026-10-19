@@ -3236,7 +3236,7 @@ def test_default_scan_cache_ttl_outlasts_the_dashboard_poll() -> None:
     # A TTL shorter than the poll makes every dashboard tick a cold rescan.
     from software_agent_factory.dashboard.assets import APP_JS
 
-    match = re.search(r"POLL_INTERVAL_MS = (\d+);", APP_JS)
+    match = re.search(r"POLL_ACTIVE_MS = (\d+);", APP_JS)
     assert match is not None
     assert DEFAULT_SCAN_CACHE_TTL * 1000 > int(match.group(1))
 

@@ -96,7 +96,7 @@ def test_the_runs_view_no_longer_dumps_raw_snapshot_keys() -> None:
 
 def test_script_is_deferred_in_the_head_and_not_in_the_body() -> None:
     head, body = _INDEX_HTML.split("</head>")
-    assert re.search(r'<script\s+defer\s+src="/assets/app\.js"></script>', head)
+    assert re.search(r'<script\s+defer\s+src="/assets/app\.[0-9a-f]{16}\.js"></script>', head)
     assert "<script" not in body
 
 
@@ -354,10 +354,11 @@ def test_active_nav_link_uses_the_accent_token() -> None:
 def test_one_poll_refreshes_only_the_open_view() -> None:
     js = dashboard_assets.APP_JS
     code = normalized(js)
-    assert "const POLL_INTERVAL_MS = 5000;" in code
-    assert code.count("setInterval(") == 2
-    assert "globalThis.setInterval(pollView, POLL_INTERVAL_MS);" in code
+    assert code.count("setInterval(") == 1
     assert "globalThis.setInterval(tickTimers, TICK_INTERVAL_MS);" in code
+    tick = function_source(js, "pollTick")
+    # The next check is set before this one runs, so a throw cannot end the chain.
+    assert tick.index("setTimeout(pollTick, POLL_ACTIVE_MS);") < tick.index("pollView();")
     refreshers = object_literal_source(js, "REFRESHERS")
     assert re.findall(r"(\w+): (?:function|refreshCompare)", refreshers) == [
         "runs",
@@ -376,7 +377,7 @@ def test_start_applies_the_theme_then_wires_controls_then_opens_the_route() -> N
         "bindControls();",
         "seedBackHistory();",
         "applyRoute(false);",
-        "globalThis.setInterval(pollView, POLL_INTERVAL_MS);",
+        "globalThis.setTimeout(pollTick, POLL_ACTIVE_MS);",
     ]
     positions = [start.index(call) for call in order]
     assert positions == sorted(positions)
