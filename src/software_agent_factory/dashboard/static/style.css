@@ -665,7 +665,7 @@ button:disabled {
   }
   #service-live { margin-top: -0.5rem; }
   .subtitle { display: none; }
-  header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
+  header { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 0.5rem 1rem; }
   nav { flex-direction: row; flex-wrap: wrap; }
   main { padding: 1rem; }
 }

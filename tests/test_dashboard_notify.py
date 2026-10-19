@@ -82,3 +82,25 @@ def test_the_check_reads_the_needs_you_and_stale_run_lists() -> None:
     assert '"/api/runs?limit=100&state=" + spec.state' in body
     assert "freshAlerts(notifySeen" in body
     assert "checkNotify();" in function_source(_JS, "pollTick")
+
+
+def test_a_run_that_still_waits_is_kept_when_older_keys_are_dropped() -> None:
+    seen = ["needs_you:long"] + [f"needs_you:old{index}" for index in range(199)]
+    first = _fresh(seen, [_alert("long"), _alert("new")])
+    assert first["fresh"] == [_alert("new")]
+    kept = first["seen"]
+    assert isinstance(kept, list)
+    assert len(kept) == 200
+    assert kept[-2:] == ["needs_you:long", "needs_you:new"]
+    assert _fresh(kept, [_alert("long"), _alert("new")])["fresh"] == []
+
+
+def test_turning_notifications_on_starts_from_the_runs_that_wait_now() -> None:
+    body = function_source(_JS, "setNotify")
+    assert "notifySeen = null;" in body.split("if (on)")[1]
+
+
+def test_a_check_that_ends_after_turning_off_tells_nothing() -> None:
+    body = function_source(_JS, "checkNotify")
+    then = body.split(".then(function (lists)")[1]
+    assert then.index("if (!notifyOn)") < then.index("showNotification(")

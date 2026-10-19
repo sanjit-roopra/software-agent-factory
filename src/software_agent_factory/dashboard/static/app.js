@@ -552,8 +552,11 @@
 
   // The alerts not told about yet, and the keys to remember. With no memory yet (seen is
   // null) the runs that wait now are the starting point: they are remembered, not told.
+  // The keys of runs that still wait move to the end, so the limit drops the oldest
+  // finished ones first and a run that waits a long time is not told about again.
   function freshAlerts(seen, current) {
-    const known = new Set(Array.isArray(seen) ? seen : []);
+    const told = Array.isArray(seen) ? seen : [];
+    const known = new Set(told);
     const fresh = [];
     for (const alert of current) {
       const key = notifyKey(alert);
@@ -562,10 +565,10 @@
         fresh.push(alert);
       }
     }
-    const kept = Array.isArray(seen) ? seen : [];
+    const waiting = new Set(current.map(notifyKey));
     return {
       fresh: Array.isArray(seen) ? fresh : [],
-      seen: kept.concat(fresh.map(notifyKey)).slice(-NOTIFY_SEEN_LIMIT)
+      seen: told.filter((key) => !waiting.has(key)).concat([...waiting]).slice(-NOTIFY_SEEN_LIMIT)
     };
   }
 
@@ -621,6 +624,9 @@
     storeNotifyOn(on);
     renderNotifyToggle();
     if (on) {
+      // Turning it on starts from the runs that wait now, so runs that began to wait
+      // while it was off do not all notify at once.
+      notifySeen = null;
       lastNotifyAt = 0;
     }
   }
@@ -667,6 +673,9 @@
         return alertsOf(spec, payload);
       });
     })).then(function (lists) {
+      if (!notifyOn) {
+        return;
+      }
       const result = freshAlerts(notifySeen, lists.flat());
       notifySeen = result.seen;
       storeNotifySeen(result.seen);

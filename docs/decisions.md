@@ -17,9 +17,10 @@ browser for notification permission only when a person chooses it. While it is o
 the page reads `GET /api/runs?state=escalated` and `GET /api/runs?state=stuck`
 every 15 seconds, and at once on a `runs-changed` event. It shows one notification
 for each run id that it has not told about before, for each of the two kinds. It
-keeps the ids it told about, at most 200, in memory and in `localStorage`. With no
-stored ids, the runs that wait at the first check are only remembered, so turning
-the toggle on does not flood the screen. A click on a notification focuses the tab
+keeps the ids it told about, at most 200, in memory and in `localStorage`. The ids
+of runs that still wait stay in that list, so a run that waits a long time is not
+told about again. When the toggle turns on, the runs that wait at the first check
+are only remembered. So turning the toggle on does not flood the screen. A click on a notification focuses the tab
 and opens `#run/<id>`. There is no service worker, so notifications come only while
 the tab is open.
 
