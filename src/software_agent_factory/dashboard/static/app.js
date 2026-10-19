@@ -3344,7 +3344,7 @@
   // The time limit of the running call, a warning once 80% of it has passed.
   function timeoutPart(active, nowMs) {
     const limitMs = Number(active.timeout_seconds) * MS_PER_SECOND;
-    if (!(limitMs > 0)) {
+    if (!Number.isFinite(limitMs) || limitMs <= 0) {
       return null;
     }
     const late = nowMs - Date.parse(active.started_at) >= TIMEOUT_WARN_SHARE * limitMs;
