@@ -5,7 +5,8 @@ Two layers keep a dashboard poll from re-reading the whole run store:
 * a short TTL reuses the last scan outright, so the summary, health and runs reads
   of one poll share it;
 * after the TTL, a rescan lists and stats every run directory again (cheap) but
-  parses only the ``run.json`` files whose modification time or size changed.
+  parses only the ``run.json`` files whose modification time, size or inode
+  changed.
   Unchanged runs are the same parsed ``FactoryRun`` objects as before.
 
 Parsed runs are shared between callers and must be treated as read-only. The cache
@@ -32,8 +33,11 @@ __all__ = ["DEFAULT_SCAN_CACHE_TTL", "RunScanCache"]
 # back-to-back polls reuse one scan instead of rescanning every tick.
 DEFAULT_SCAN_CACHE_TTL: float = 6.0
 
-#: What identifies one version of a ``run.json``: its modification time and size.
-_FileKey = tuple[int, int]
+#: What identifies one version of a ``run.json``: its modification time, size and
+#: inode. The store replaces ``run.json`` atomically, so every save gets a new inode;
+#: that catches a same-size rewrite inside one coarse mtime tick (Linux timestamps
+#: can be a few milliseconds coarse).
+_FileKey = tuple[int, int, int]
 
 
 class RunScanCache:
@@ -127,7 +131,7 @@ class RunScanCache:
             stat = (self._store.runs_dir / run_id / "run.json").stat()
         except OSError:
             return self._store.load_run(run_id)
-        key = (stat.st_mtime_ns, stat.st_size)
+        key = (stat.st_mtime_ns, stat.st_size, stat.st_ino)
         cached = previous.get(run_id)
         if cached is not None and cached[0] == key:
             run = cached[1]

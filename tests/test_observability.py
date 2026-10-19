@@ -2914,6 +2914,30 @@ def test_run_scan_cache_rescan_parses_only_changed_runs(tmp_path: Path) -> None:
     assert cache.parses == 6
 
 
+def test_run_scan_cache_reparses_a_same_size_rewrite_with_the_same_mtime(
+    tmp_path: Path,
+) -> None:
+    store = FileRunStore(tmp_path / "data")
+    store.save_run(_run("run-a", state=WorkflowState.VERIFYING))
+    run_json = store.runs_dir / "run-a" / "run.json"
+    before = run_json.stat()
+
+    current_time = 0.0
+    cache = RunScanCache(store, ttl=1.0, clock=lambda: current_time)
+    assert cache.get_scan().readable_runs[0].state == WorkflowState.VERIFYING
+
+    # Same-length state value, written within one mtime tick: only the inode differs.
+    rewritten = run_json.with_name("run.json.tmp")
+    rewritten.write_text(run_json.read_text().replace('"VERIFYING"', '"REVIEWING"'))
+    os.replace(rewritten, run_json)
+    os.utime(run_json, ns=(before.st_atime_ns, before.st_mtime_ns))
+    assert run_json.stat().st_size == before.st_size
+
+    current_time = 2.0
+    assert cache.get_scan().readable_runs[0].state == WorkflowState.REVIEWING
+    assert cache.parses == 2
+
+
 def test_run_scan_cache_rescan_keeps_callers_lists_apart(tmp_path: Path) -> None:
     store = FileRunStore(tmp_path / "data")
     store.save_run(_run("run-a", state=WorkflowState.DONE))
