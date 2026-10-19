@@ -269,8 +269,9 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
     assert [selector.strip() for selector in clipped] == [
         ".visually-hidden",
-        ".clamp,\n#runs-table td:first-child a,\n.live-tool",
         "#runs-table td",
+        "#runs-table td:first-child a",
+        ".clamp,\n.live-tool",
         "#runs-table thead th",
     ]
 
@@ -278,7 +279,9 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
 def test_the_run_list_keeps_a_fixed_layout_inside_its_card() -> None:
     css = dashboard_assets.STYLE_CSS
     assert "#runs-table { table-layout: fixed; min-width: 56rem; }" in css
-    assert "#runs-table td { overflow: hidden; text-overflow: ellipsis; }" in css
+    assert re.search(
+        r"#runs-table td\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;", css
+    )
     media = re.search(r"@media \(max-width: 1360px\) \{(.*?)\n\}", css, re.DOTALL)
     assert media is not None
     assert re.search(r"#runs-table th:nth-child\(5\), [^{]*\{\s*width: 0;", media.group(1))
@@ -1750,8 +1753,12 @@ def test_a_run_row_stays_on_one_line_and_cuts_title_and_reason() -> None:
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"#runs-table td\s*\{[^}]*white-space:\s*nowrap;", css)
     assert re.search(
-        r"\.clamp,\s*#runs-table td:first-child a,\s*\.live-tool\s*\{[^}]*display:\s*inline-block;"
-        r"[^}]*text-overflow:\s*ellipsis;",
+        r"#runs-table td:first-child a\s*\{[^}]*display:\s*inline-block;[^}]*max-width:\s*100%;"
+        r"[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;",
+        css,
+    )
+    assert re.search(
+        r"\.clamp,\s*\.live-tool\s*\{[^}]*display:\s*inline-block;[^}]*text-overflow:\s*ellipsis;",
         css,
     )
     assert 'className: "why-cell"' in function_source(_JS, "whyCell")
