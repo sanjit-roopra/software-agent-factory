@@ -150,6 +150,11 @@ def test_the_strip_sits_above_the_run_list_and_its_timers_tick() -> None:
     render = function_source(_JS, "renderNowRunning")
     assert "syncTick(elapsed, spec.since, " in render
     assert "renderNowRunning(summary?.now_running)" in function_source(_JS, "renderOverview")
+    # On a narrow screen the role and model wrap under the title instead of hiding it.
+    assert ".now-title { flex: 1 1 12rem; min-width: 0;" in dashboard_assets.STYLE_CSS
+    assert (
+        "flex-wrap: wrap;" in dashboard_assets.STYLE_CSS.split(".now-running a {")[1].split("}")[0]
+    )
 
 
 def test_a_run_row_opens_through_its_stretched_title_link_not_a_click_handler() -> None:

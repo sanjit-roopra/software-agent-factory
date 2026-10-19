@@ -170,9 +170,11 @@ tr.group-row > td {
 }
 tr[data-run-id]:hover, tr[data-run-id]:focus-within { background: var(--surface-2); }
 .now-running { display: flex; flex-direction: column; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+/* On a narrow screen the role, model and time wrap under the title. */
 .now-running a {
   display: flex;
-  gap: 0.75rem;
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
   align-items: baseline;
   padding: 0.35rem 0.6rem;
   border-left: 3px solid var(--accent);
@@ -181,8 +183,8 @@ tr[data-run-id]:hover, tr[data-run-id]:focus-within { background: var(--surface-
   text-decoration: none;
 }
 .now-running a:hover, .now-running a:focus-visible { background: var(--surface-2); }
-.now-title { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.now-detail { color: var(--text-muted); font-size: var(--fs-sm); }
+.now-title { flex: 1 1 12rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-detail { color: var(--text-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
 .now-elapsed { font-variant-numeric: tabular-nums; }
 .project-card {
   border: 1px solid var(--border);
