@@ -1666,6 +1666,17 @@
     document.getElementById("run-detail-content").hidden = message !== null;
   }
 
+  // Grey bars while a view's first fetch is pending; screen readers hear the
+  // loading text instead. assets.skeleton renders the same markup in the page.
+  function skeletonNodes(rows) {
+    const bars = element("span", "skeleton");
+    bars.ariaHidden = "true";
+    for (let index = 0; index < rows; index += 1) {
+      bars.append(element("span", "skeleton-row"));
+    }
+    return [element("span", "visually-hidden", LOADING_TEXT), bars];
+  }
+
   function activeInvocationText(active) {
     if (!active) {
       return null;
@@ -4986,7 +4997,8 @@
       return;
     }
     heading.textContent = "Run " + runId;
-    setRunDetailStatus("Loading\u2026");
+    setRunDetailStatus("");
+    document.getElementById("run-detail-status").replaceChildren(...skeletonNodes(4));
   }
 
   // What each view refreshes. A run view with an unknown id has no run id in

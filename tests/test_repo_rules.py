@@ -24,7 +24,7 @@ OVERSIZED_MODULES = {
     "service.py": 951,
     "scheduler.py": 961,
     "repository_profile.py": 970,
-    "dashboard/handler.py": 900,
+    "dashboard/handler.py": 878,
     "doctor.py": 881,
     "prompts.py": 865,
     "config.py": 860,

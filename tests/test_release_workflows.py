@@ -886,7 +886,7 @@ def test_dashboard_static_assets_are_packaged() -> None:
     package_data = pyproject["tool"]["setuptools"]["package-data"]["software_agent_factory"]
     spec_text = PACKAGING_SPEC.read_text(encoding="utf-8")
 
-    for name in ("app.js", "style.css"):
+    for name in ("app.js", "style.css", "inter-latin.woff2", "inter-LICENSE.txt"):
         assert f"dashboard/static/{name}" in package_data
         assert f'"dashboard" / "static" / "{name}"' in spec_text
         assert (ROOT / "src/software_agent_factory/dashboard/static" / name).is_file()

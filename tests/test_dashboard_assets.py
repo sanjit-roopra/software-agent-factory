@@ -194,7 +194,8 @@ def test_the_run_view_heading_names_the_run_or_reports_an_unknown_one() -> None:
         'document.getElementById("run-id").hidden = true; '
         "if (!RUN_ID_PATTERN.test(runId)) { heading.textContent = VIEWS.run.label; "
         'setRunDetailStatus("Unknown run"); return; } '
-        'heading.textContent = "Run " + runId; setRunDetailStatus("Loading\\u2026"); }'
+        'heading.textContent = "Run " + runId; setRunDetailStatus(""); '
+        'document.getElementById("run-detail-status").replaceChildren(...skeletonNodes(4)); }'
     )
 
 
@@ -224,8 +225,38 @@ def test_loading_and_empty_states() -> None:
     assert "NO_RUNS_TEXT" in function_source(js, "emptyRunsText")
     assert "Start one with factory run" in js
     assert "emptyRunsText(request)" in function_source(js, "renderRunsStatus")
-    assert 'setRunDetailStatus("Loading\\u2026");' in function_source(js, "prepareRunDetailView")
-    assert re.search(r'<p\s+id="runs-status">Loading&hellip;</p>', _INDEX_HTML)
+    assert "skeletonNodes(4)" in function_source(js, "prepareRunDetailView")
+    assert f'<p id="runs-status">{dashboard_assets.skeleton(6)}</p>' in _INDEX_HTML
+    assert f'<p id="run-detail-status">{dashboard_assets.skeleton(4)}</p>' in _INDEX_HTML
+
+
+def test_skeleton_bars_hide_from_screen_readers_behind_the_loading_text() -> None:
+    [result] = run_functions(_JS, [JsCall("skeletonNodes", (3,))])
+
+    text, bars = result.value
+    assert text == {
+        "tagName": "span",
+        "className": "visually-hidden",
+        "textContent": "Loading\u2026",
+    }
+    assert bars["ariaHidden"] == "true"
+    assert [bar["className"] for bar in bars["children"]] == ["skeleton-row"] * 3
+    assert dashboard_assets.skeleton(2).count('class="skeleton-row"') == 2
+
+
+def test_skeleton_shimmer_stops_for_reduced_motion() -> None:
+    css = dashboard_assets.STYLE_CSS
+    reduced = css[css.index("@media (prefers-reduced-motion: reduce)") :]
+    assert ".skeleton-row { animation: none; }" in reduced[: reduced.index("}\n}") + 3]
+
+
+def test_the_font_is_bundled_and_served_from_the_page_origin() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert 'src: url("/assets/inter-latin.woff2") format("woff2");' in css
+    content_type, body = dashboard_assets.STATIC_ROUTES["/assets/inter-latin.woff2"]
+    assert content_type == "font/woff2"
+    assert body.startswith(b"wOF2")
+    assert len(body) < 120_000
 
 
 def test_empty_run_table_stays_hidden_until_rows_arrive() -> None:

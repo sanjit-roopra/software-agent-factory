@@ -1,5 +1,41 @@
 # Architecture Decisions
 
+## ADR-072: Ship the Inter font and show placeholder bars while the dashboard loads
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The stylesheet names Inter first, but the dashboard did not ship it, so most
+operators saw a system font. The page CSP allows files from the page's own
+address only, so a font service cannot fill the gap. The run list and the run
+page showed one line of `Loading...` text during their first fetch. The layout
+jumped when the data came.
+
+### Decision
+
+The package ships the Latin part of the Inter variable font as
+`dashboard/static/inter-latin.woff2` (48 KB). It comes unchanged from
+`@fontsource-variable/inter` 5.2.5. Its SIL Open Font License 1.1 text sits
+next to it in `inter-LICENSE.txt`. The stylesheet loads it with `@font-face`
+from `/assets/inter-latin.woff2` and `font-display: swap`. Text outside the
+Latin range uses the system font.
+
+Every `/assets/` file now comes from one table in `dashboard/assets.py` that
+holds its media type and body. The handler reads that table in one step, so it
+gets smaller.
+
+While the first fetch of the run list or a run page is pending, the page shows
+grey placeholder bars. A soft shimmer moves across them, and it stops when the
+operator asks for less motion. Screen readers hear `Loading...` and skip the
+bars. The bars go when the data or an error comes.
+
+### Consequences
+
+The wheel and the single binary are 48 KB larger. Geist Mono is still not
+shipped, so code text uses the system monospace font. The other views keep their
+loading text.
+
 ## ADR-071: Show a possibly looping chip on an active run that repeats
 
 Status: accepted on 2026-10-19.

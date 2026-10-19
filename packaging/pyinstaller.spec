@@ -37,6 +37,14 @@ package_data = [
         str(package_root / "dashboard" / "static" / "style.css"),
         "software_agent_factory/dashboard/static",
     ),
+    (
+        str(package_root / "dashboard" / "static" / "inter-latin.woff2"),
+        "software_agent_factory/dashboard/static",
+    ),
+    (
+        str(package_root / "dashboard" / "static" / "inter-LICENSE.txt"),
+        "software_agent_factory/dashboard/static",
+    ),
 ]
 
 build_info_path = package_root / "build-info.json"
@@ -46,7 +54,7 @@ if not build_info_path.is_file():
     )
 package_data.append((str(build_info_path), "software_agent_factory"))
 
-# The read-only dashboard serves ``dashboard/static/app.js`` and ``style.css``
+# The read-only dashboard serves ``dashboard/static/app.js``, ``style.css`` and the font
 # from package files (bundled above); its HTML is rendered in
 # ``dashboard/assets.py``. There is no bundler and no build step.
 hiddenimports = collect_submodules("software_agent_factory")
