@@ -204,8 +204,7 @@ class RepositoryConfig(ConfigModel):
         default_factory=list,
         description=(
             "Extra environment variable names repository commands may see, on top of "
-            "the verifier's minimal allowlist. Credentials are never passed through "
-            "implicitly."
+            "the verifier's minimal allowlist. Credentials are never passed through implicitly."
         ),
     )
     log_capture_bytes: PositiveInt = DEFAULT_LOG_CAPTURE_BYTES
@@ -504,6 +503,7 @@ class FactorySettings(ConfigModel):
     unattended: bool = False
     retries: RetryConfig
     agent_timeout_seconds: PositiveInt = DEFAULT_AGENT_TIMEOUT_SECONDS
+    store_prompts: bool = False
 
     @field_validator("data_dir", mode="before")
     @classmethod

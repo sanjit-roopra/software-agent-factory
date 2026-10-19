@@ -193,7 +193,7 @@ from .telemetry import (
 )
 from .toolchain import degraded_toolchain_inventory, inventory_toolchain
 from .toolchain_commands import candidate_commands, root_version_files, select_package_runner
-from .transcripts import store_call_transcript
+from .transcripts import store_call_prompt, store_call_transcript
 from .verification import DeterministicVerifier
 from .workspace import (
     GitWorktreeWorkspace,
@@ -380,6 +380,7 @@ class WorkflowController:
         The heartbeat stops once the call outlives its timeout, and pauses while the agent
         is silent, so a runtime that hangs looks stalled to the service (ADR-048).
         """
+        store_call_prompt(self._config.factory, self._store.run_dir(run.id), run, request)
         with live_activity(run) as live, watched(self, run, request.timeout_seconds, live):
             return self._runtime.run(request)
 
@@ -1666,11 +1667,7 @@ class WorkflowController:
             self._store.save_run(run)
             if reraise_runtime_errors:
                 raise
-            return AgentResult(
-                role=request.role,
-                success=False,
-                failure_reason=failure_reason,
-            )
+            return AgentResult(role=request.role, success=False, failure_reason=failure_reason)
         self._raise_if_cancelled(run)
         completed_at = utc_now()
         invocation_duration_ms = (completed_at - started_at).total_seconds() * 1000.0

@@ -485,7 +485,7 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if diff_match:
             self._serve_run_diff(diff_match.group(1), query, send_body)
             return
-        status, payload = transcript_answer(self.server.run_transcript_provider, path)
+        status, payload = transcript_answer(self.server, path)
         self._respond_json(status, payload, send_body)
 
     def _serve_index(
