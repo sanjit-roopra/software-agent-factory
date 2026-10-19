@@ -17,7 +17,7 @@ OVERSIZED_MODULES = {
     "workflow.py": 2692,
     "github.py": 1979,
     "observability.py": 1390,
-    "cli.py": 1806,
+    "cli.py": 1802,
     "escalation.py": 1501,
     "projects.py": 1690,
     "dashboard/sanitize.py": 1016,

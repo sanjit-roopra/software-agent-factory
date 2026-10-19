@@ -613,6 +613,7 @@ button:disabled {
   background: var(--text-muted);
 }
 .live-on::before { background: var(--ok); }
+#service-live { margin-top: -1.25rem; }
 .run-summary-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; }
 .run-stop { display: inline-flex; gap: 0.5rem; margin-left: auto; }
 .run-stop[hidden] { display: none; }
@@ -660,6 +661,7 @@ button:disabled {
     padding: 1rem;
     gap: 0.75rem;
   }
+  #service-live { margin-top: -0.5rem; }
   .subtitle { display: none; }
   header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; }
   nav { flex-direction: row; flex-wrap: wrap; }

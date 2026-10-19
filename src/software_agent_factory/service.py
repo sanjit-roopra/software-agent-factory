@@ -100,6 +100,7 @@ from .scheduler import (
     deterministic_work_item_id,
     opaque_id_from_work_item_id,
 )
+from .service_heartbeat import write_service_heartbeat
 from .setup_run import SetupTrigger
 from .store import FileRunStore
 from .verification import DeterministicVerifier
@@ -868,9 +869,7 @@ class FactoryService:
             )
 
     def _log_tick(self, report: TickReport) -> None:
-        """Emit one structured record per tick, so a rate-limited or
-        at-capacity cycle is visible in the on-disk log and not only in the
-        foreground CLI output."""
+        """Log one record per tick, so a capped cycle shows in the log file, not only the CLI."""
         logger.info(
             "tick: %d candidate(s), %d eligible, dispatched %s%s%s",
             report.candidates_fetched,
@@ -903,6 +902,7 @@ class FactoryService:
                 # races with tick() sets the event again and causes an
                 # immediate follow-up tick instead of being lost.
                 self._completion_event.clear()
+                write_service_heartbeat(self.config.data_dir)
                 try:
                     self.reconcile_escalation()
                     self.check_setup()

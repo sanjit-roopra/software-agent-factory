@@ -1423,6 +1423,7 @@ def dashboard_command(
     from .run_metrics import resolve_usage
     from .run_requests import build_steer_requester, build_stop_requester
     from .run_scan_cache import RunScanCache
+    from .service_heartbeat import service_liveness
     from .store import FileRunStore
     from .transcripts import call_prompt_reader, call_transcript_reader
 
@@ -1431,10 +1432,14 @@ def dashboard_command(
     reply_policy = ReplyPolicy.from_config(factory_config.escalation)
     scan_cache = RunScanCache(store)
 
+    def service() -> dict[str, object]:
+        interval = factory_config.scheduler.poll_interval_seconds
+        return service_liveness(factory_config.data_dir, interval)
+
     def snapshot_provider(
         *, limit: int, offset: int, filters: RunListFilter | None = None
     ) -> object:
-        return build_monitoring_snapshot(
+        snapshot = build_monitoring_snapshot(
             store,
             stale_after=stale_after,
             limit=limit,
@@ -1444,13 +1449,16 @@ def dashboard_command(
             reply_policy=reply_policy,
             run_filter=filters,
         )
+        return {**snapshot.model_dump(mode="json"), "service": service()}
 
     def run_detail_provider(run_id: str) -> object | None:
         # None (404) for a missing or unreadable run. The detail carries raw failure reasons and
         # escalation text, which ``dashboard.view.run_detail_view`` redacts and bounds. It never
         # carries a log, a diff, a prompt or a raw artifact body.
         detail = build_run_detail(store, run_id, stale_after=stale_after, reply_policy=reply_policy)
-        return None if detail is None else with_pending(store, run_id, detail)
+        if detail is None:
+            return None
+        return {**with_pending(store, run_id, detail).model_dump(mode="json"), "service": service()}
 
     def health_provider() -> object:
         return build_operational_health(
@@ -1500,13 +1508,7 @@ def dashboard_command(
             ]
             models: list[dict[str, object]] = []
             for invocation in execution.invocation_records:
-                models.append(
-                    {
-                        **invocation_row(invocation),
-                        "scope": "project",
-                        "task_id": None,
-                    }
-                )
+                models.append({**invocation_row(invocation), "scope": "project", "task_id": None})
             for task in execution.tasks:
                 if task.run_id is None:
                     continue
@@ -1514,14 +1516,9 @@ def dashboard_command(
                     run = store.load_run(task.run_id)
                 except (FileNotFoundError, OSError, ValueError):
                     continue
+                scope = {"scope": f"task {task.task_id}", "task_id": task.task_id}
                 for invocation in run.invocation_records:
-                    models.append(
-                        {
-                            **invocation_row(invocation),
-                            "scope": f"task {task.task_id}",
-                            "task_id": task.task_id,
-                        }
-                    )
+                    models.append({**invocation_row(invocation), **scope})
                 active_invocation = build_active_invocation_summary(
                     run,
                     stale_after=stale_after,
@@ -1530,8 +1527,7 @@ def dashboard_command(
                     models.append(
                         {
                             **active_invocation.model_dump(mode="json"),
-                            "scope": f"task {task.task_id}",
-                            "task_id": task.task_id,
+                            **scope,
                             "success": None,
                             "completed_at": None,
                             "usage": None,

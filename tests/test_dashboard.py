@@ -1381,7 +1381,7 @@ def test_summary_sends_only_what_the_page_reads(running_server: RunningServer) -
         "GET", "/api/summary", headers=running_server.authed_headers()
     )
 
-    assert sorted(_body_json(response)) == ["health", "now_running", "overview"]
+    assert sorted(_body_json(response)) == ["health", "now_running", "overview", "service"]
 
 
 def test_summary_never_sends_a_secret_shaped_model_name() -> None:

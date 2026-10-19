@@ -115,7 +115,7 @@ def test_the_summary_carries_the_calls_in_progress() -> None:
 
     summary = summary_view(snapshot)
 
-    assert set(summary) == {"overview", "now_running"}
+    assert set(summary) == {"overview", "now_running", "service"}
     assert summary["now_running"][0]["run_id"] == "run-1"
     assert summary_view({})["now_running"] == []
 

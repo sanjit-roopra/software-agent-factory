@@ -23,6 +23,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
@@ -602,17 +603,23 @@ def test_dashboard_providers_serve_real_snapshot_health_and_detail(
     config = fake_dashboard[0].config
 
     snapshot = config.snapshot_provider(limit=10, offset=0)
-    assert isinstance(snapshot, MonitoringSnapshot)
-    assert snapshot.counts.succeeded == 1
+    assert snapshot.pop("service") == {"running": False, "ticked_at": None}
+    assert MonitoringSnapshot.model_validate(snapshot).counts.succeeded == 1
 
     health = config.health_provider()
     assert isinstance(health, OperationalHealthReport)
     assert health.stale_runs == []
 
-    detail = config.run_detail_provider(run_id)
-    assert isinstance(detail, RunDetail)
+    detail = _detail(config.run_detail_provider, run_id)
     assert detail.run_id == run_id
     assert [attempt.role for attempt in detail.attempts]
+
+
+def _detail(provider: Any, run_id: str) -> RunDetail:
+    """The run detail the provider serves, without the service liveness it adds."""
+    payload = provider(run_id)
+    assert payload.pop("service") == {"running": False, "ticked_at": None}
+    return RunDetail.model_validate(payload)
 
 
 def _save_needs_human_run(
@@ -648,8 +655,7 @@ def test_dashboard_detail_carries_the_configured_reopen_limit(
 
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
 
-    detail = fake_dashboard[0].config.run_detail_provider("run-needs-human")
-    assert isinstance(detail, RunDetail)
+    detail = _detail(fake_dashboard[0].config.run_detail_provider, "run-needs-human")
     assert detail.escalation is not None
     assert detail.escalation.max_reopens == 2
 
@@ -712,8 +718,7 @@ def test_dashboard_detail_closes_the_reply_from_the_configured_window_and_switch
 
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
 
-    detail = fake_dashboard[0].config.run_detail_provider("run-old-notice")
-    assert isinstance(detail, RunDetail)
+    detail = _detail(fake_dashboard[0].config.run_detail_provider, "run-old-notice")
     assert detail.escalation is not None
     assert detail.escalation.reply_closed_cause == cause
 
@@ -742,8 +747,7 @@ def test_dashboard_detail_closes_the_reply_from_the_configured_allowed_hosts(
 
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
 
-    detail = fake_dashboard[0].config.run_detail_provider("run-other-host")
-    assert isinstance(detail, RunDetail)
+    detail = _detail(fake_dashboard[0].config.run_detail_provider, "run-other-host")
     assert detail.escalation is not None
     assert detail.escalation.reply_closed_cause == "the notice host is no longer allowed"
 
@@ -838,8 +842,7 @@ def test_dashboard_detail_never_exposes_logs_diffs_or_prompts(
     run_id = make_run(source_repo, data_dir)
     assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
 
-    detail = fake_dashboard[0].config.run_detail_provider(run_id)
-    payload = detail.model_dump(mode="json")
+    payload = fake_dashboard[0].config.run_detail_provider(run_id)
 
     forbidden = {"reasoning", "logs", "patch", "diff", "prompt", "output"}
     assert forbidden.isdisjoint(payload)
@@ -859,7 +862,7 @@ def test_dashboard_uses_the_configured_stall_timeout_as_the_stale_threshold(
     assert runner.invoke(app, ["dashboard", "--config", str(config_path)]).exit_code == 0
 
     snapshot = fake_dashboard[0].config.snapshot_provider(limit=1, offset=0)
-    assert snapshot.stale_after_seconds == 4321.0
+    assert snapshot["stale_after_seconds"] == 4321.0
 
 
 def test_run_never_starts_a_dashboard(

@@ -466,6 +466,34 @@
     live.className = state.noticeKind === null && lastSuccessAt !== null ? "live live-on" : "live";
   }
 
+  // Under the live dot: whether factory start ticked lately (ADR-075). No data hides it.
+  function renderService(service) {
+    const node = document.getElementById("service-live");
+    const known = isPlainObject(service) && typeof service.running === "boolean";
+    node.hidden = !known;
+    const since = known && service.running ? service.ticked_at : null;
+    syncTick(node, since, "Service running \u00b7 ticked ");
+    node.dataset.tickSuffix = " ago";
+    node.className = since === null ? "live" : "live live-on";
+    setText(node, since === null ? "Service not running" : node.dataset.tickPrefix +
+      elapsedText(since, Date.now()) + " ago");
+  }
+
+  // The views without the summary read it only for the service line; a failure keeps the line.
+  // One read at a time, so a slow summary never piles up requests across polls.
+  let serviceInFlight = false;
+  function refreshService() {
+    if (serviceInFlight) {
+      return;
+    }
+    serviceInFlight = true;
+    apiFetch("/api/summary").then(function (summary) {
+      renderService(summary?.service);
+    }, function () {}).finally(function () {
+      serviceInFlight = false;
+    });
+  }
+
   // The Runs link counts the runs that need the operator. None hides the count.
   function renderRunsCount(needsYouCount) {
     const badge = document.getElementById("runs-count");
@@ -801,7 +829,8 @@
   function tickTimers() {
     const nowMs = Date.now();
     for (const node of document.querySelectorAll("[data-tick-since]")) {
-      setText(node, node.dataset.tickPrefix + elapsedText(node.dataset.tickSince, nowMs));
+      const suffix = node.dataset.tickSuffix ?? "";
+      setText(node, node.dataset.tickPrefix + elapsedText(node.dataset.tickSince, nowMs) + suffix);
     }
   }
 
@@ -965,6 +994,7 @@
     loadedViews.add("health");
     const container = document.getElementById("health-body");
     const health = summary.health;
+    renderService(summary.service);
     const text = healthText(health);
     if (text !== null) {
       delete container.dataset.signature;
@@ -1107,6 +1137,7 @@
     renderSparkline(document.getElementById("figure-week-trend"), overview.week_cost_by_day);
     renderRunsCount(overview.needs_you);
     renderNowRunning(summary?.now_running);
+    renderService(summary?.service);
   }
 
   // One call in progress: a link to its run, the run title, the role and model, and the
@@ -5163,6 +5194,9 @@
   function refreshView() {
     renderNotice();
     const view = state.view;
+    if (view !== "runs" && view !== "health") {
+      refreshService();
+    }
     const refresher = REFRESHERS[view];
     if (!refresher || isDirty(document.getElementById(DIRTY_REGIONS[view] ?? VIEWS[view].section))) {
       return Promise.resolve();

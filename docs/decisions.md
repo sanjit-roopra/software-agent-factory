@@ -1,5 +1,36 @@
 # Architecture Decisions
 
+## ADR-075: Show on the dashboard whether the factory service runs
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+A request queued from the dashboard waits for `factory start`. The page did not
+show whether the service ran. A queued request only said "If factory start is not
+running, start it." The operator had to check a terminal or `launchctl`.
+
+### Decision
+
+The service writes `<data_dir>/service-heartbeat.json` at the start of each cycle,
+with its process id, host and tick time, as one atomic write. A failed write is
+logged and the cycle goes on. The dashboard snapshot and run detail providers read
+the file and add `service`: `running` and `ticked_at`. The service counts as
+running while its last tick is at most three poll intervals old. A missing,
+broken or future file reads as not running. The process id and host stay off the
+page.
+
+The sidebar shows `Service running · ticked <n> s ago` or `Service not running`
+under the live dot. A queued request says whether the service runs, is stopped, or
+already ticked after the request and waits for a slot. Once the service takes the
+request, the run leaves the waiting state, so the queued panel goes away.
+
+### Consequences
+
+The views without the summary fetch `/api/summary` on each poll to keep the
+sidebar line current. A dashboard that reads another host's data directory sees
+that host's heartbeat. No dashboard write action changes.
+
 ## ADR-074: Let the Compare picker search all runs and stop polling what cannot change
 
 Status: accepted on 2026-10-19.
