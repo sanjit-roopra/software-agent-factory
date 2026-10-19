@@ -717,6 +717,8 @@ confidence
 Normalized, persisted CI evidence (`ci.json`). Produced by the controller from
 `gh pr checks` output. It is expressed with plain strings so the domain layer
 has no dependency on the `gh` adapter.
+Each CI observation also gets a copy under `attempts/NN/`, where `NN` is the
+attempt whose code CI checked. The dashboard shows this history.
 
 Fields approximately:
 
@@ -1145,7 +1147,8 @@ Suggested layout:
 │               ├── test-report.json
 │               ├── review.json
 │               ├── review-acceptance.json
-│               └── review-impasse.json
+│               ├── review-impasse.json
+│               └── ci.json
 └── workspaces/
     └── TASK-ID/
         └── repository worktree

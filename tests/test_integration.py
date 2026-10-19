@@ -914,6 +914,9 @@ def test_repairable_ci_failure_repairs_pushes_again_and_then_passes(
     assert first != second
     assert "Repair: none" in first
     assert "Repair: CI" in second
+    # Each CI observation is kept with the attempt whose code it checked.
+    assert store.load_artifact(run.id, CIReport, attempt=1).overall == "FAIL"
+    assert store.load_artifact(run.id, CIReport, attempt=2).overall == "PASS"
 
     # An additional normal commit is pushed to the same branch; the PR is
     # updated rather than recreated, and nothing is force-pushed or merged.

@@ -38,6 +38,8 @@ OUTPUT_CUT_MARKER = "...[earlier output cut]...\n"
 #: The most diff text one answer carries: 256 KB per attempt (ADR-047).
 DIFF_CHAR_LIMIT = 256_000
 _DIFF_FILE_HEADER = "diff --git "
+#: The most attempts a check history carries, newest kept; matches ``run_evidence.HISTORY_LIMIT``.
+MAX_HISTORY = 10
 
 _CATEGORIES = frozenset(category.value for category in ReviewFindingCategory)
 _REVIEW_TEXT_LISTS = (
@@ -121,8 +123,27 @@ def _sanitize_ci_check(data: dict[str, Any], run_id: str | None) -> dict[str, An
     }
 
 
+def _history(value: Any, run_id: str | None, ci: bool) -> list[dict[str, Any]]:
+    """Per-attempt checks; an entry without a valid attempt number is dropped."""
+    entries = []
+    for item in _dicts(value)[-MAX_HISTORY:]:
+        attempt = item.get("attempt")
+        if not is_positive_int(attempt):
+            continue
+        checks = _dicts(item.get("checks"))
+        entry: dict[str, Any] = {"attempt": attempt}
+        if ci:
+            entry["overall"] = _short(item.get("overall"))
+            entry["checks"] = [_sanitize_ci_check(check, run_id) for check in checks]
+        else:
+            entry["checks"] = [_sanitize_check(check, run_id) for check in checks]
+        entries.append(entry)
+    return entries
+
+
 def sanitize_run_checks(raw: Any) -> dict[str, Any]:
-    """The verification and CI checks of a run, each with its redacted output tail."""
+    """The verification and CI checks of a run, each with its redacted output tail,
+    and the same per attempt for the attempt picker."""
     data = to_json_safe(raw)
     if not isinstance(data, dict):
         raise TypeError(_NOT_AN_OBJECT)
@@ -130,6 +151,8 @@ def sanitize_run_checks(raw: Any) -> dict[str, Any]:
     return {
         "checks": [_sanitize_check(item, run_id) for item in _dicts(data.get("checks"))],
         "ci_checks": [_sanitize_ci_check(item, run_id) for item in _dicts(data.get("ci_checks"))],
+        "verification_history": _history(data.get("verification_history"), run_id, ci=False),
+        "ci_history": _history(data.get("ci_history"), run_id, ci=True),
     }
 
 
@@ -362,6 +385,7 @@ def sanitize_run_diff(raw: Any) -> dict[str, Any]:
 __all__ = [
     "DIFF_CHAR_LIMIT",
     "MAX_EVIDENCE_ITEMS",
+    "MAX_HISTORY",
     "OUTPUT_CHAR_LIMIT",
     "OUTPUT_LINE_LIMIT",
     "REVIEW_TEXT_LIMIT",

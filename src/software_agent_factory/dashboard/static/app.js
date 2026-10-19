@@ -211,7 +211,7 @@
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
     baseTitle: document.title, needsYouCount: 0, fullReason: null, shownReason: null,
     evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
-    evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, diffKey: null,
+    evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
     search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
     projectsListed: false
   };
@@ -3556,9 +3556,48 @@
     }
   }
 
+  // Every attempt that saved verification or CI checks, oldest first.
+  function checkAttempts(payload) {
+    const numbers = asArray(payload.verification_history).concat(asArray(payload.ci_history))
+      .map(function (entry) { return entry.attempt; });
+    return Array.from(new Set(numbers)).sort(function (a, b) { return a - b; });
+  }
+
+  // The checks of one attempt; null is the latest saved reports.
+  function checksForAttempt(payload, attempt) {
+    if (attempt === null) {
+      return { checks: asArray(payload.checks), ci_checks: asArray(payload.ci_checks) };
+    }
+    function picked(history) {
+      const entry = asArray(history).find(function (item) { return item.attempt === attempt; });
+      return entry ? asArray(entry.checks) : [];
+    }
+    return { checks: picked(payload.verification_history), ci_checks: picked(payload.ci_history) };
+  }
+
+  function renderChecksPicker(attempts) {
+    const select = document.getElementById("checks-attempt");
+    document.getElementById("checks-attempt-label").hidden = attempts.length < 2;
+    clearChildren(select);
+    select.appendChild(new Option("Latest", ""));
+    for (const number of attempts) {
+      select.appendChild(new Option(String(number), String(number)));
+    }
+    select.value = state.checksAttempt === null ? "" : String(state.checksAttempt);
+  }
+
   function renderChecks(body, payload) {
-    evidenceGroup(body, "Verification", asArray(payload.checks).map(checkNode));
-    evidenceGroup(body, "CI", asArray(payload.ci_checks).map(ciCheckNode));
+    const attempts = checkAttempts(payload);
+    if (!attempts.includes(state.checksAttempt)) {
+      state.checksAttempt = null;
+    }
+    renderChecksPicker(attempts);
+    const shown = checksForAttempt(payload, state.checksAttempt);
+    evidenceGroup(body, "Verification", shown.checks.map(checkNode));
+    evidenceGroup(body, "CI", shown.ci_checks.map(ciCheckNode));
+    if (body.childElementCount === 0 && attempts.length > 0) {
+      body.appendChild(element("p", "evidence-note", "This attempt saved no checks."));
+    }
     return body.childElementCount > 0;
   }
 
@@ -3606,9 +3645,56 @@
     }
   }
 
-  function dispositionText(item) {
-    return [item.finding_id, item.status].filter(Boolean).join(" ") + ": " +
-      displayValue(item.rationale);
+  const DISPOSITION_WORDS = { RESOLVED: "fixed", UNRESOLVED: "not fixed", WITHDRAWN: "withdrawn" };
+
+  // Each finding with its life across rounds: the attempt that raised it, then
+  // what each later round said about it, then its place in the ledger now.
+  function findingThreads(payload) {
+    const threads = new Map();
+    for (const round of asArray(payload.rounds)) {
+      const raised = asArray(round.blocking_findings).concat(asArray(round.repair_regressions));
+      for (const finding of raised) {
+        if (finding.id && !threads.has(finding.id)) {
+          threads.set(finding.id, { finding: finding, events: [{ attempt: round.attempt_number, word: "raised" }] });
+        }
+      }
+      for (const item of asArray(round.prior_finding_dispositions)) {
+        const thread = threads.get(item.finding_id);
+        if (thread) {
+          const word = DISPOSITION_WORDS[item.status] || displayValue(item.status);
+          thread.events.push({ attempt: round.attempt_number, word: word, rationale: item.rationale });
+        }
+      }
+    }
+    const ledger = [["open", payload.open_findings], ["accepted", payload.accepted_findings]];
+    return Array.from(threads.values(), function (thread) {
+      const match = ledger.find(function (entry) {
+        return asArray(entry[1]).some(function (item) { return item.id === thread.finding.id; });
+      });
+      return { ...thread, ledger: match ? match[0] : null };
+    });
+  }
+
+  // "raised attempt 1 · fixed attempt 2"
+  function threadLifeText(thread) {
+    return thread.events.map(function (event) {
+      return event.word + " attempt " + displayValue(event.attempt);
+    }).join(" · ");
+  }
+
+  function threadNode(thread) {
+    const item = findingNode(thread.finding);
+    const life = element("span", "finding-life", threadLifeText(thread));
+    if (thread.ledger) {
+      life.appendChild(element("span", "badge", thread.ledger));
+    }
+    item.insertBefore(life, item.querySelector(".finding-where"));
+    for (const event of thread.events) {
+      if (typeof event.rationale === "string" && event.rationale !== "") {
+        item.appendChild(element("p", "evidence-note", "Attempt " + event.attempt + ": " + event.rationale));
+      }
+    }
+    return item;
   }
 
   function reviewVerdict(round) {
@@ -3634,7 +3720,6 @@
     }
     findingList(item, "Blocking findings", round.blocking_findings);
     findingList(item, "Regressions", round.repair_regressions);
-    textList(item, "Prior findings", asArray(round.prior_finding_dispositions).map(dispositionText));
     textList(item, "Suggested changes", round.suggested_changes);
     textList(item, "Findings", round.findings);
     textList(item, "Scope concerns", round.scope_concerns);
@@ -3643,10 +3728,16 @@
     return item;
   }
 
-  // Newest round first, and only it opens.
+  // The finding history, then the newest round first, and only it opens.
   function renderReview(body, payload) {
     findingList(body, "Open findings", payload.open_findings);
     findingList(body, "Accepted findings", payload.accepted_findings);
+    const threads = findingThreads(payload);
+    if (threads.length > 0) {
+      body.appendChild(element("h4", "", "Finding history"));
+      const list = body.appendChild(element("ul", "findings"));
+      threads.forEach(function (thread) { list.appendChild(threadNode(thread)); });
+    }
     const rounds = asArray(payload.rounds).slice().reverse();
     rounds.forEach(function (round, index) {
       body.appendChild(roundNode(round, index === 0));
@@ -4345,6 +4436,7 @@
     const runId = validRunId(route);
     if (runId !== state.runId) {
       state.diffAttempt = null;
+      state.checksAttempt = null;
       state.diffKey = null;
       state.runDetail = null;
       state.evidence = { plan: null, diff: null };
@@ -4748,6 +4840,12 @@
     document.getElementById("diff-attempt").addEventListener("change", function (event) {
       const value = event.target.value;
       state.diffAttempt = value === "" ? null : Number(value);
+      void refreshView();
+    });
+    document.getElementById("checks-attempt").addEventListener("change", function (event) {
+      const value = event.target.value;
+      state.checksAttempt = value === "" ? null : Number(value);
+      state.evidenceDrawn.checks = null;
       void refreshView();
     });
     document.getElementById("runs-prev").addEventListener("click", function () {
