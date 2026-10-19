@@ -38,6 +38,18 @@ def sort_button(key: str, label: str) -> str:
     )
 
 
+def skeleton(rows: int) -> str:
+    """Grey placeholder bars shown while a view's first fetch is pending.
+
+    ``app.js`` builds the same markup in ``skeletonNodes`` when it loads a run again.
+    """
+    bars = '<span class="skeleton-row"></span>' * rows
+    return (
+        '<span class="visually-hidden">Loading&hellip;</span>'
+        f'<span class="skeleton" aria-hidden="true">{bars}</span>'
+    )
+
+
 def render_index_html(*, token: str) -> str:
     """Render the single static page. ``token`` is a server-generated value,
     never user input, so embedding it directly as an attribute is safe.
@@ -149,7 +161,7 @@ def render_index_html(*, token: str) -> str:
           <span id="runs-page-info"></span>
           <button id="runs-next" type="button">Next</button>
         </div>
-        <p id="runs-status">Loading&hellip;</p>
+        <p id="runs-status">{skeleton(6)}</p>
         <div class="table-wrap" hidden>
           <table id="runs-table">
             <thead>
@@ -176,7 +188,7 @@ def render_index_html(*, token: str) -> str:
       <h1 id="run-detail-heading" tabindex="-1">Run detail</h1>
       <p id="run-id" class="run-id" hidden></p>
       <p><a href="#runs">&larr; Back to runs</a></p>
-      <p id="run-detail-status">Loading&hellip;</p>
+      <p id="run-detail-status">{skeleton(4)}</p>
       <div id="run-detail-content" hidden>
         <section id="run-summary" class="card run-summary" aria-labelledby="run-detail-heading">
           <p id="run-escalation" class="headline" role="status" hidden></p>
@@ -469,3 +481,17 @@ FAVICON_ALERT_SVG: str = FAVICON_SVG.replace(
     "</svg>",
     '<circle cx="24" cy="8" r="7" fill="#f59e0b" stroke="#ffffff" stroke-width="2"/></svg>',
 )
+
+#: Every file served under ``/assets/``: its media type and body. The font is the Latin
+#: subset of Inter (SIL OFL 1.1, ``static/inter-LICENSE.txt``), served from the page's own
+#: origin because the CSP allows nothing else.
+STATIC_ROUTES: dict[str, tuple[str, bytes]] = {
+    "/assets/app.js": ("text/javascript; charset=utf-8", APP_JS.encode("utf-8")),
+    "/assets/style.css": ("text/css; charset=utf-8", STYLE_CSS.encode("utf-8")),
+    "/assets/favicon.svg": ("image/svg+xml", FAVICON_SVG.encode("utf-8")),
+    "/assets/favicon-alert.svg": ("image/svg+xml", FAVICON_ALERT_SVG.encode("utf-8")),
+    "/assets/inter-latin.woff2": (
+        "font/woff2",
+        resources.files(__package__).joinpath("static", "inter-latin.woff2").read_bytes(),
+    ),
+}

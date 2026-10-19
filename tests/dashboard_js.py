@@ -189,7 +189,10 @@ function replaceValue(key, value) {
 }
 const calls = reviveValue(JSON.parse(require("fs").readFileSync(0, "utf8")));
 const document = {
-  createElement: (tagName) => ({ tagName: tagName, className: "", textContent: "" })
+  createElement: (tagName) => ({
+    tagName: tagName, className: "", textContent: "",
+    append(...nodes) { this.children = (this.children || []).concat(nodes); }
+  })
 };
 """
 _RUNNER = """\

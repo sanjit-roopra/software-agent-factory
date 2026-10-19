@@ -110,11 +110,6 @@ _EVIDENCE_SANITIZERS: dict[str, Callable[[Any], dict[str, Any]]] = {
     "review": sanitize_run_review,
     "plan": sanitize_run_plan,
 }
-#: The tab icons the page switches between (see ``assets.FAVICON_SVG``).
-_FAVICONS: dict[str, str] = {
-    "/assets/favicon.svg": assets.FAVICON_SVG,
-    "/assets/favicon-alert.svg": assets.FAVICON_ALERT_SVG,
-}
 
 
 #: Answer fields that grow with the clock alone. The page shows them in whole minutes, so
@@ -433,26 +428,9 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == _INDEX_PATH:
             self._serve_index(send_body)
             return
-        if path == "/assets/app.js":
-            self._respond_bytes(
-                HTTPStatus.OK,
-                "text/javascript; charset=utf-8",
-                assets.APP_JS.encode("utf-8"),
-                send_body,
-            )
-            return
-        if path == "/assets/style.css":
-            self._respond_bytes(
-                HTTPStatus.OK,
-                "text/css; charset=utf-8",
-                assets.STYLE_CSS.encode("utf-8"),
-                send_body,
-            )
-            return
-        if path in _FAVICONS:
-            self._respond_bytes(
-                HTTPStatus.OK, "image/svg+xml", _FAVICONS[path].encode("utf-8"), send_body
-            )
+        if path in assets.STATIC_ROUTES:
+            content_type, body = assets.STATIC_ROUTES[path]
+            self._respond_bytes(HTTPStatus.OK, content_type, body, send_body)
             return
         if path == "/healthz":
             self._respond_json(HTTPStatus.OK, {"status": "ok"}, send_body)

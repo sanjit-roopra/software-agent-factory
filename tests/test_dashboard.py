@@ -672,6 +672,7 @@ def test_each_dashboard_port_has_its_own_cookie_name() -> None:
         pytest.param("/assets/style.css", "css", id="stylesheet"),
         pytest.param("/assets/favicon.svg", "image/svg+xml", id="icon"),
         pytest.param("/assets/favicon-alert.svg", "image/svg+xml", id="alert-icon"),
+        pytest.param("/assets/inter-latin.woff2", "font/woff2", id="font"),
         pytest.param(SUMMARY_PATH, "application/json", id="api"),
     ],
 )
