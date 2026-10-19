@@ -1,5 +1,41 @@
 # Architecture Decisions
 
+## ADR-067: Keep each state move of a run, and show the stages on the run page
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+A run kept only its current state and the time it entered it. The run page showed
+the calls, but not the path the run took. It did not show how long the run spent
+planning, or that review sent it back to the implementer twice. Copilot coding agent and Devin both
+show the stages of a task and where it is now.
+
+### Decision
+
+`FactoryRun` gets `transitions`: a list of state moves, each with `from_state`,
+`to_state`, `at` and an optional `reason`. Every path that changes the state adds a
+move: `WorkflowController.transition`, the reopen from an escalation and the restart
+after a factory restart. One helper, `stage_history.leave_state`, adds the move and
+also times the stage it leaves, so the paths share one rule. The run keeps the last
+200 moves, and a reason is cut to 500 characters. A halt or failure keeps its
+failure reason. A reopen and a restart keep a fixed reason.
+
+`GET /api/runs/<id>` sends the moves. The sanitizer drops a move with an unknown
+state or a bad time, and it redacts and cuts each reason like a failure reason.
+
+The run page shows six stages under the status line: Triage, Plan, Implement,
+Verify, Review and Deliver. Each stage adds up the time of its states and counts
+how often the run came into it. A count above one shows as `×2`. The current stage
+adds the time since `state_started_at`. When the run halted or failed, the stage it
+left is marked.
+
+### Consequences
+
+A run saved before this change has no moves, so its page shows no stages and its
+Steps list works as before. The run file grows by at most 200 short moves. No new
+write action is added.
+
 ## ADR-066: A short Steps view, and what each step did
 
 Status: accepted on 2026-10-19.

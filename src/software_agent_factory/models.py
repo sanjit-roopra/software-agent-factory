@@ -399,6 +399,21 @@ _REMOVED_RUN_KEYS = frozenset(
 )
 
 
+#: The most state moves a run keeps; the oldest go first (ADR-067).
+MAX_STATE_TRANSITIONS = 200
+#: The longest reason a state move keeps, in characters (ADR-067).
+MAX_TRANSITION_REASON_CHARS = 500
+
+
+class StateTransition(ModelBase):
+    """One move of a run from one state to the next, and why when it halted or failed."""
+
+    from_state: WorkflowState
+    to_state: WorkflowState
+    at: UtcDateTime
+    reason: str | None = Field(default=None, max_length=MAX_TRANSITION_REASON_CHARS)
+
+
 class FactoryRun(VersionedModel):
     id: str = Field(min_length=1)
     work_item_id: str = Field(min_length=1)
@@ -457,6 +472,9 @@ class FactoryRun(VersionedModel):
     review_acceptance: ReviewAcceptance | None = None
     performance: PerformanceRecord = Field(default_factory=PerformanceRecord)
     escalation: EscalationRecord | None = None
+    #: The last :data:`MAX_STATE_TRANSITIONS` state moves, oldest first (ADR-067).
+    #: Runs recorded before ADR-067 have none.
+    transitions: list[StateTransition] = Field(default_factory=list)
 
     @model_validator(mode="before")
     @classmethod

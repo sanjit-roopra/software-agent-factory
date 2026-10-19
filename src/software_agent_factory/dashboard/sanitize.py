@@ -23,6 +23,8 @@ redacted with :func:`software_agent_factory.redaction.redact_secrets`. They are 
 A value that is not text becomes ``None``. The health messages, remediation text,
 degraded reasons and error get the same redaction.
 
+Each state move's reason gets the same redact and cut (see :mod:`.transitions`).
+
 A call's ``tool_calls`` are the one free-text field that comes from what an
 agent did: each is a tool name and a one-line preview, such as a shell command
 or a file path. They are redacted and cut like the fields above, and every
@@ -38,7 +40,7 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Collection
-from datetime import datetime, timedelta
+from datetime import timedelta
 from typing import Any, get_args
 
 from ..escalation_protocol import MAX_PLAN_DECISIONS, REPLY_CLOSED_CAUSES
@@ -59,6 +61,7 @@ from ..redaction import bounded_reason, redact_secrets
 from ..store import ARTIFACT_FILENAMES
 from .aggregate import STATUS_FAILED, STATUS_SUCCESS, call_total_tokens
 from .snapshot import to_json_safe
+from .transitions import parse_timestamp, sanitize_transitions, timestamp
 from .validators import (
     ESCALATION_STATUSES,
     ESCALATION_TARGET_TYPES,
@@ -143,6 +146,7 @@ RUN_DETAIL_FIELDS: frozenset[str] = (RUN_SUMMARY_FIELDS - {_CALLS_FIELD}) | froz
         "artifacts",
         "escalation",
         "escalation_route",
+        "transitions",
     }
 )
 
@@ -413,7 +417,7 @@ def _operator_escalation(value: Any) -> dict[str, Any] | None:
     return {
         "from_route": _short_token(value.get("from_route")),
         "to_route": _short_token(value.get("to_route")),
-        "started_at": _timestamp(value.get("started_at")),
+        "started_at": timestamp(value.get("started_at")),
         "status": value["status"],
         "note": _bounded_text(value.get("note")),
         "error": _bounded_text(value.get("error")),
@@ -494,24 +498,9 @@ def _short_token(value: Any) -> str | None:
     return None
 
 
-def _parse_timestamp(value: Any) -> datetime | None:
-    """Parse a timezone-aware ISO timestamp; anything else is unreported."""
-    if not isinstance(value, str):
-        return None
-    try:
-        parsed = datetime.fromisoformat(value)
-    except ValueError:
-        return None
-    return parsed if parsed.tzinfo is not None else None
-
-
-def _timestamp(value: Any) -> str | None:
-    return value if _parse_timestamp(value) is not None else None
-
-
 def _duration_ms(started_at: Any, completed_at: Any) -> int | None:
-    start = _parse_timestamp(started_at)
-    end = _parse_timestamp(completed_at)
+    start = parse_timestamp(started_at)
+    end = parse_timestamp(completed_at)
     if start is None or end is None or end < start:
         return None
     return (end - start) // timedelta(milliseconds=1)
@@ -575,8 +564,8 @@ def _sanitize_call(data: dict[str, Any], run_id: str | None) -> dict[str, Any]:
         "status": _outcome_status(success),
         "success": success if isinstance(success, bool) else None,
         "attempt_number": _positive_int(data.get("attempt_number")),
-        "started_at": _timestamp(data.get("started_at")),
-        "completed_at": _timestamp(data.get("completed_at")),
+        "started_at": timestamp(data.get("started_at")),
+        "completed_at": timestamp(data.get("completed_at")),
         "duration_ms": _duration_ms(data.get("started_at"), data.get("completed_at")),
         "usage": usage,
         "total_tokens": call_total_tokens(usage),
@@ -652,7 +641,7 @@ def sanitize_active_invocation(raw: Any, run_id: str | None = None) -> dict[str,
     call["status"] = status if is_active_status(status := data.get("status")) else "running"
     count = data.get("tool_call_count")
     call["tool_call_count"] = count if is_count(count) else len(call["tool_calls"])
-    call["last_output_at"] = _timestamp(data.get("last_output_at"))
+    call["last_output_at"] = timestamp(data.get("last_output_at"))
     call["timeout_seconds"] = _positive_int(data.get("timeout_seconds"))
     return call
 
@@ -791,6 +780,7 @@ def sanitize_run_detail(raw: Any) -> dict[str, Any]:
     run_id = run_id_of(data)
     sanitized.update(_reason_fields(data.get("failure_reason"), run_id))
     sanitized.update(_sanitize_calls(data, run_id))
+    sanitized["transitions"] = sanitize_transitions(data.get("transitions"), run_id)
     sanitized.update(_sanitize_detail_sections(data, run_id))
     return sanitized
 

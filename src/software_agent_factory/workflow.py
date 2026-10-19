@@ -181,6 +181,7 @@ from .run_context import (
     delivery_policy_fingerprint as delivery_policy_fingerprint,
 )
 from .run_watch import HEARTBEAT_INTERVAL_SECONDS, live_activity, watched
+from .stage_history import leave_state
 from .store import FileRunStore
 from .subprocess_utils import kill_thread_children
 from .suppression_scan import suppression_scan
@@ -423,17 +424,8 @@ class WorkflowController:
             raise TransitionError(f"cannot transition from {run.state} to {new_state}")
 
         now = utc_now()
-        stage_name = run.state.value
-        stage_started_at = run.state_started_at or run.updated_at
-        stage_duration_ms = max(0.0, (now - stage_started_at).total_seconds() * 1000.0)
-        run.performance.record_duration(
-            f"stage.{stage_name}",
-            stage_duration_ms,
-            stage=stage_name,
-            operation="stage",
-            accumulate=True,
-        )
         updates: dict[str, object] = {
+            "transitions": leave_state(run, new_state, now, failure_reason),
             "state": new_state,
             "updated_at": now,
             "state_started_at": now,

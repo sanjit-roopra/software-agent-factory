@@ -21,9 +21,8 @@ Public surfaces:
   repair attempts, completed-run duration). Rendered by ``factory status``
   and by the Phase 15.11 dashboard -- neither of which this module
   imports or depends on.
-- :func:`build_run_detail` -- the single-run counterpart, returning a
-  :class:`RunDetail` (summary fields, completion facts and the attempt
-  history) or ``None`` for a run that does not exist or cannot be read.
+- :func:`build_run_detail` -- the single-run counterpart: a :class:`RunDetail` (summary,
+  completion facts, attempts and state moves) or ``None`` for an unreadable run.
 - Operational health lives in :mod:`.operational_health`, structured logging in
   :mod:`.factory_logging`, and run classification, usage totals and aggregate metrics
   in :mod:`.run_metrics`.
@@ -95,6 +94,7 @@ from .models import (
     RunListFilter,
     RunSteerNote,
     RunStopRequest,
+    StateTransition,
     TriageResult,
     UsageMetrics,
     UtcDateTime,
@@ -457,11 +457,9 @@ class RunDetail(ModelBase):
     and no raw artifact bodies. ``failure_reason`` (here and on each attempt
     and invocation) is a free-text exception: it is carried raw so the
     dashboard sanitizer can redact and bound it, so this model must not be
-    shown to a user without that step. The escalation's approval scope and
-    plan decision questions are the other free-text exception, with the same
-    rule. ``commit_sha`` and ``pull_request_url``
-    are controller-produced identifiers, not repository content, so both are
-    included.
+    shown to a user without that step. The escalation's approval scope, plan
+    decision questions and each state move's reason follow the same rule.
+    ``commit_sha`` and ``pull_request_url`` are controller identifiers, so both show.
     """
 
     run_id: str
@@ -510,6 +508,7 @@ class RunDetail(ModelBase):
     #: The waiting stop request and steer note; the dashboard adds them (ADR-049, ADR-051).
     stop_request: RunStopRequest | None = None
     steer_note: RunSteerNote | None = None
+    transitions: list[StateTransition] = Field(default_factory=list)
 
 
 class MonitoringSnapshot(VersionedModel):
@@ -1290,6 +1289,7 @@ def build_run_detail(
         ),
         guidance=_build_run_guidance(store, run),
         failure_reason=run.failure_reason,
+        transitions=run.transitions,
     )
 
 

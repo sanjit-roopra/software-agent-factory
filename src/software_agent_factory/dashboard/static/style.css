@@ -447,6 +447,28 @@ button:disabled {
 .chip.chip-failed { color: var(--error); border-color: var(--error); }
 /* With the headline hidden (a waiting run says why in its callout), keep clear of the badge. */
 .headline[hidden] + .status-line { margin-top: 0.75rem; }
+/* Stage stepper (ADR-067): one box per stage, a top bar in the stage's colour. */
+.stages {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(6.5rem, 1fr));
+  gap: 0.35rem;
+  margin: 0 0 1rem;
+  padding: 0;
+  list-style: none;
+  font-size: var(--fs-sm);
+  font-variant-numeric: tabular-nums;
+}
+.stage {
+  display: flex;
+  flex-direction: column;
+  padding: 0.3rem 0.5rem;
+  border-top: 3px solid var(--border);
+  color: var(--text-muted);
+}
+.stage-name { font-weight: 600; }
+.stage-done { border-top-color: var(--ok); color: var(--text); }
+.stage-current { border-top-color: var(--accent); color: var(--text); }
+.stage-halted { border-top-color: var(--error); color: var(--text); }
 #runs-table th, #runs-table td { padding: 0.35rem 0.4rem; font-size: 0.85rem; }
 #runs-table td {
   vertical-align: middle;

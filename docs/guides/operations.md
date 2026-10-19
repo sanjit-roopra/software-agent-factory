@@ -127,6 +127,13 @@ cost, in the same order, and the other units are in its tooltip. The page never
 adds two units together. The `i` mark beside each cost heading explains the
 units.
 
+Under the run's status line, the run page shows its six stages: Triage, Plan,
+Implement, Verify, Review and Deliver. Each stage shows the time the run spent
+in it. A stage the run came back to shows how often, for example `Review ×2`.
+The stage the run is in has a blue bar, and the stage where it stopped has a
+red bar. Runs from before this change have no stages. Their Steps list still
+shows each call.
+
 ### Approve, answer or retry a halted run
 
 A run that needs you shows a panel on its detail page. The panel says why the
