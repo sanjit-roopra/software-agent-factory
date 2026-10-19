@@ -105,7 +105,7 @@
   };
   // While the operator types, a refresh skips only this region of the view. Other views
   // skip the whole section.
-  const DIRTY_REGIONS = { run: "next-step", runs: "runs-body" };
+  const DIRTY_REGIONS = { run: "next-step", runs: "runs-body", compare: "compare-content" };
 
   // What a screen reader hears before each cell of a call row. The visible header
   // row is hidden from assistive technology, so the row carries its own labels.
@@ -221,6 +221,8 @@
   // a form that is drawn again for the same context gets them back.
   // filter is the run list filter from the hash, and compare holds the ids picked
   // on the Compare view: both come from the route and the pickers, never from the server.
+  // compareList is the picker's search, page and the last page loaded; compareLoaded says
+  // what the Compare view already holds, so a poll fetches only what may have changed.
   const state = {
     offset: 0, limit: PAGE_SIZE, runId: null, view: "runs", noticeKind: null,
     actionMessage: "", draft: null, filter: null, compare: { a: null, b: null },
@@ -228,7 +230,8 @@
     evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
     evidence: { plan: null, diff: null, checks: null, review: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
     search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
-    projectsListed: false, shownRuns: null, selectFirstRow: false
+    projectsListed: false, shownRuns: null, selectFirstRow: false,
+    compareList: { q: "", offset: 0, page: null }, compareLoaded: { list: null, settled: null }
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -4870,24 +4873,91 @@
     };
   }
 
+  // The picker lists one page of the runs that match the search, newest first.
+  function compareListPath(list) {
+    const params = new URLSearchParams({ limit: String(MAX_RUNS_LIMIT), offset: String(list.offset) });
+    if (list.q !== "") {
+      params.set("q", list.q);
+    }
+    return "/api/runs?" + params.toString();
+  }
+
+  function selectionKey(selection) {
+    return isCompleteSelection(selection) ? selection.a + "/" + selection.b : null;
+  }
+
+  // The states of lifecycle.TERMINAL_STATES: a run in one of them no longer changes.
+  const FINISHED_STATES = new Set(["DONE", "NEEDS_HUMAN", "FAILED"]);
+
+  // The pair a comparison answer settles: both runs finished, so polling it again
+  // would show the same table. Null while either run is still going.
+  function settledKey(payload, selection) {
+    const finished = FINISHED_STATES.has(payload?.a?.state) && FINISHED_STATES.has(payload?.b?.state);
+    return finished ? selectionKey(selection) : null;
+  }
+
+  // What a compare refresh still has to load. The list loads once per route entry,
+  // search and page, not on every poll. The comparison loads until both picked runs
+  // have finished.
+  function compareDue(list, selection, loaded) {
+    const key = selectionKey(selection);
+    return {
+      list: loaded.list !== compareListPath(list),
+      comparison: key !== null && loaded.settled !== key
+    };
+  }
+
+  function renderComparePager(payload, offset) {
+    const shown = asArray(payload.runs).length;
+    const page = payload.page || {};
+    const total = typeof page.total === "number" ? page.total : null;
+    const info = document.getElementById("compare-page-info");
+    if (shown === 0) {
+      setText(info, offset === 0 ? "No runs match." : "No more runs.");
+    } else {
+      setText(info, "showing " + (offset + 1) + "\u2013" + (offset + shown) +
+        (total === null ? "" : " of " + total));
+    }
+    document.getElementById("compare-prev").disabled = offset <= 0;
+    document.getElementById("compare-next").disabled =
+      !hasMoreRuns(page, shown, total, { offset: offset, limit: MAX_RUNS_LIMIT });
+  }
+
+  function refreshCompareRuns(request, list) {
+    const path = compareListPath(list);
+    return apiFetch(path).then(whenLatest(request, function (payload) {
+      state.compareLoaded.list = path;
+      state.compareList.page = payload;
+      renderComparePager(payload, list.offset);
+      renderCompareRuns(payload, request);
+    }));
+  }
+
   function refreshComparison(request) {
     const path = "/api/compare?a=" + encodeURIComponent(request.compare.a) +
       "&b=" + encodeURIComponent(request.compare.b);
-    return apiFetch(path).then(whenLatest(request, renderComparison), onCompareFailure(request));
+    return apiFetch(path).then(whenLatest(request, function (payload) {
+      state.compareLoaded.settled = settledKey(payload, request.compare);
+      renderComparison(payload);
+    }), onCompareFailure(request));
   }
 
-  function refreshCompareRuns(request) {
-    const query = "limit=" + MAX_RUNS_LIMIT + "&offset=0";
-    return apiFetch("/api/runs?" + query).then(whenLatest(request, renderCompareRuns));
-  }
-
-  // The pickers always load. The comparison loads once both runs are chosen.
+  // The pickers redraw from the held page, so a pick needs no new list. With
+  // nothing due, the refresh still checks that the server answers.
   function refreshCompare(request) {
-    const tasks = [refreshCompareRuns(request)];
-    if (isCompleteSelection(request.compare)) {
+    const list = state.compareList;
+    if (list.page !== null) {
+      renderCompareRuns(list.page, request);
+    }
+    const due = compareDue(list, request.compare, state.compareLoaded);
+    const tasks = [];
+    if (due.list) {
+      tasks.push(refreshCompareRuns(request, { q: list.q, offset: list.offset }));
+    }
+    if (due.comparison) {
       tasks.push(refreshComparison(request));
     }
-    return tasks;
+    return tasks.length === 0 ? [pingServer()] : tasks;
   }
 
   // ---- Routing -----------------------------------------------------------
@@ -5144,6 +5214,7 @@
       prepareRunDetailView(route.runId);
     }
     if (route.view === "compare") {
+      state.compareLoaded = { list: null, settled: null };
       resetCompareStatus(state.compare);
     }
     state.baseTitle = routeTitle(route);
@@ -5597,9 +5668,43 @@
   // picker.
   function onComparePick() {
     state.compare = readCompareSelection();
+    state.compareLoaded.settled = null;
     globalThis.history.pushState(null, "", compareHash(state.compare));
     resetCompareStatus(state.compare);
     void refreshView();
+  }
+
+  // Typing searches after a pause; Newer and Older page through the matches.
+  let compareSearchTimer = null;
+
+  function showCompareRuns(q, offset) {
+    globalThis.clearTimeout(compareSearchTimer);
+    state.compareList.q = q;
+    state.compareList.offset = offset;
+    void refreshView();
+  }
+
+  function readCompareSearch() {
+    return document.getElementById("compare-search").value.trim().slice(0, MAX_SEARCH_LENGTH);
+  }
+
+  function bindCompareSearch() {
+    document.getElementById("compare-search-bar").addEventListener("submit", function (event) {
+      event.preventDefault();
+      showCompareRuns(readCompareSearch(), 0);
+    });
+    document.getElementById("compare-search").addEventListener("input", function () {
+      globalThis.clearTimeout(compareSearchTimer);
+      compareSearchTimer = globalThis.setTimeout(function () {
+        showCompareRuns(readCompareSearch(), 0);
+      }, SEARCH_DELAY_MS);
+    });
+    document.getElementById("compare-prev").addEventListener("click", function () {
+      showCompareRuns(state.compareList.q, Math.max(0, state.compareList.offset - MAX_RUNS_LIMIT));
+    });
+    document.getElementById("compare-next").addEventListener("click", function () {
+      showCompareRuns(state.compareList.q, state.compareList.offset + MAX_RUNS_LIMIT);
+    });
   }
 
   function bindControls() {
@@ -5641,6 +5746,7 @@
     });
     document.getElementById("compare-a").addEventListener("change", onComparePick);
     document.getElementById("compare-b").addEventListener("change", onComparePick);
+    bindCompareSearch();
     globalThis.matchMedia(DARK_QUERY).addEventListener("change", updateThemeToggle);
     updateThemeToggle();
     globalThis.addEventListener("hashchange", function () {

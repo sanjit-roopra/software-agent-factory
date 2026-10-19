@@ -1,5 +1,33 @@
 # Architecture Decisions
 
+## ADR-074: Let the Compare picker search all runs and stop polling what cannot change
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The Compare pickers listed only the newest 100 runs, so the operator was not able to pick
+an older run. The page also fetched that list again on every poll, every five seconds,
+and fetched the comparison again even when both runs were over.
+
+### Decision
+
+The Compare view gets a search box and Newer and Older buttons above the pickers.
+They use the `q`, `limit` and `offset` parameters that `/api/runs` already takes,
+100 runs a page. Typing searches after a short pause, as the run list search does.
+
+The list loads when the view opens and when the search or page changes, not on a
+poll. A pick redraws the pickers from the page already loaded. The comparison
+loads when a pair is picked, and polls only while one of the two runs is still
+going. Once both are in a terminal state (done, needs human or failed), the poll
+only checks that the server answers. Opening the view again loads everything again.
+
+### Consequences
+
+A new run does not show in the pickers until the operator searches, pages or opens
+the view again. A run that needs a human and is then answered keeps its old figures
+in the comparison until the view opens again.
+
 ## ADR-073: Show the calls in progress above the run list and make each run row a link
 
 Status: accepted on 2026-10-19.

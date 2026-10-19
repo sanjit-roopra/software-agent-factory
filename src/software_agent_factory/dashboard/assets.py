@@ -381,6 +381,16 @@ def render_index_html(*, token: str) -> str:
     <section id="view-compare" aria-labelledby="compare-heading" hidden>
       <h1 id="compare-heading" tabindex="-1">Compare</h1>
       <div class="card">
+        <form id="compare-search-bar" class="runs-search" role="search">
+          <label class="visually-hidden" for="compare-search">Find runs to compare</label>
+          <input id="compare-search" type="search" maxlength="{MAX_SEARCH_LENGTH}"
+            placeholder="Find a run by title, run id or issue" autocomplete="off">
+        </form>
+        <div class="compare-pager">
+          <button id="compare-prev" type="button">Newer</button>
+          <span id="compare-page-info"></span>
+          <button id="compare-next" type="button">Older</button>
+        </div>
         <div class="compare-pickers">
           <div class="picker">
             <label for="compare-a">Run A</label>
