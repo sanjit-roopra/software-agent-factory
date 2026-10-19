@@ -27,12 +27,13 @@ NOTIFICATION_TITLE = "Software factory"
 NOTIFICATION_TEXT_LIMIT = 200
 NOTIFICATION_TIMEOUT_SECONDS = 10
 
-#: Text and title go in as arguments, never into the script, so no text can change it.
+#: Title and text go in as arguments, never into the script, so no text can change it.
+#: The fixed title comes first: osascript reads a leading "-" in its first argument as an option.
 _SCRIPT = (
     "-e",
     "on run argv",
     "-e",
-    "display notification (item 1 of argv) with title (item 2 of argv)",
+    "display notification (item 2 of argv) with title (item 1 of argv)",
     "-e",
     "end run",
 )
@@ -61,7 +62,7 @@ def notify_run_outcome(
             text = f"{run.work_item_id} finished: {run.state.value}"
         text, _ = bounded_reason(text, NOTIFICATION_TEXT_LIMIT, run_id)
         runner(
-            [OSASCRIPT, *_SCRIPT, text, NOTIFICATION_TITLE],
+            [OSASCRIPT, *_SCRIPT, NOTIFICATION_TITLE, text],
             check=True,
             capture_output=True,
             timeout=NOTIFICATION_TIMEOUT_SECONDS,

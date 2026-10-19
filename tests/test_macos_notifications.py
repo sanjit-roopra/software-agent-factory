@@ -49,8 +49,8 @@ def test_needs_human_posts_a_redacted_bounded_notice(tmp_path: Path) -> None:
     )
     [(args, kwargs)] = runner.calls
     assert args[0] == OSASCRIPT
-    assert args[-1] == NOTIFICATION_TITLE
-    text = args[-2]
+    assert args[-2] == NOTIFICATION_TITLE
+    text = args[-1]
     assert text.startswith("github:o/r#7 needs you: ")
     assert secret not in text
     assert len(text) <= NOTIFICATION_TEXT_LIMIT
@@ -63,7 +63,7 @@ def test_finished_run_posts_its_state(tmp_path: Path) -> None:
     runner = FakeRunner()
     store = _store(tmp_path, WorkflowState.DONE)
     notify_run_outcome(ON, store, "run-1", runner=runner, platform="darwin")
-    assert runner.calls[0][0][-2] == "github:o/r#7 finished: DONE"
+    assert runner.calls[0][0][-1] == "github:o/r#7 finished: DONE"
 
 
 def test_unfinished_run_posts_nothing(tmp_path: Path) -> None:
