@@ -530,6 +530,175 @@
     }
   }
 
+  // ---- Browser notifications (opt-in) -------------------------------------
+
+  const NOTIFY_STORAGE_KEY = "factory-dashboard-notify";
+  const NOTIFY_SEEN_KEY = "factory-dashboard-notified";
+  // The run ids the page remembers having told about, newest last.
+  const NOTIFY_SEEN_LIMIT = 200;
+  // The run list states that notify: a run that needs you, and an active run gone stale.
+  const NOTIFY_STATES = [
+    { state: "escalated", kind: "needs_you", text: "Run needs you" },
+    { state: "stuck", kind: "stale", text: "Run is stale" }
+  ];
+  let notifyOn = false;
+  let notifySeen = null;
+  let notifyInFlight = false;
+  let lastNotifyAt = 0;
+
+  function notifyKey(alert) {
+    return alert.kind + ":" + alert.id;
+  }
+
+  // The alerts not told about yet, and the keys to remember. With no memory yet (seen is
+  // null) the runs that wait now are the starting point: they are remembered, not told.
+  // The keys of runs that still wait move to the end, so the limit drops the oldest
+  // finished ones first and a run that waits a long time is not told about again.
+  function freshAlerts(seen, current) {
+    const told = Array.isArray(seen) ? seen : [];
+    const known = new Set(told);
+    const fresh = [];
+    for (const alert of current) {
+      const key = notifyKey(alert);
+      if (!known.has(key)) {
+        known.add(key);
+        fresh.push(alert);
+      }
+    }
+    const waiting = new Set(current.map(notifyKey));
+    return {
+      fresh: Array.isArray(seen) ? fresh : [],
+      seen: told.filter((key) => !waiting.has(key)).concat([...waiting]).slice(-NOTIFY_SEEN_LIMIT)
+    };
+  }
+
+  function notifySupported() {
+    return typeof globalThis.Notification === "function";
+  }
+
+  function readNotifyOn() {
+    try {
+      return globalThis.localStorage.getItem(NOTIFY_STORAGE_KEY) === "on";
+    } catch {
+      return false;
+    }
+  }
+
+  // The remembered keys, or null when there are none yet or storage is blocked.
+  function readNotifySeen() {
+    try {
+      const seen = JSON.parse(globalThis.localStorage.getItem(NOTIFY_SEEN_KEY));
+      return Array.isArray(seen) ? seen.filter((key) => typeof key === "string") : null;
+    } catch {
+      return null;
+    }
+  }
+
+  function storeNotifyOn(on) {
+    try {
+      globalThis.localStorage.setItem(NOTIFY_STORAGE_KEY, on ? "on" : "off");
+    } catch {
+      // Storage is blocked: the choice lasts for this page view only.
+    }
+  }
+
+  function storeNotifySeen(seen) {
+    try {
+      globalThis.localStorage.setItem(NOTIFY_SEEN_KEY, JSON.stringify(seen));
+    } catch {
+      // Storage is blocked: the memory lasts for this page view only.
+    }
+  }
+
+  function renderNotifyToggle() {
+    const toggle = document.getElementById("notify-toggle");
+    const blocked = notifySupported() && globalThis.Notification.permission === "denied";
+    toggle.hidden = !notifySupported();
+    toggle.disabled = blocked;
+    toggle.setAttribute("aria-pressed", String(notifyOn));
+    toggle.textContent = blocked ? "Notifications blocked" : "Notify me";
+  }
+
+  function setNotify(on) {
+    notifyOn = on;
+    storeNotifyOn(on);
+    renderNotifyToggle();
+    if (on) {
+      // Turning it on starts from the runs that wait now, so runs that began to wait
+      // while it was off do not all notify at once.
+      notifySeen = null;
+      lastNotifyAt = 0;
+    }
+  }
+
+  // The permission prompt shows only after a click on the toggle, never on its own.
+  function onNotifyToggle() {
+    if (notifyOn) {
+      setNotify(false);
+      return;
+    }
+    globalThis.Notification.requestPermission()
+      .then(function (permission) {
+        setNotify(permission === "granted");
+      })
+      .catch(function () {
+        setNotify(false);
+      });
+  }
+
+  function showNotification(alert, text) {
+    const options = { body: alert.title || alert.id, tag: notifyKey(alert) };
+    const note = new globalThis.Notification(text, options);
+    note.addEventListener("click", function () {
+      globalThis.focus();
+      globalThis.location.hash = "#run/" + encodeURIComponent(alert.id);
+      note.close();
+    });
+  }
+
+  function alertsOf(spec, payload) {
+    return asArray(payload?.runs).filter(function (run) {
+      return isPlainObject(run) && typeof run.run_id === "string" &&
+        RUN_ID_PATTERN.test(run.run_id);
+    }).map(function (run) {
+      const title = typeof run.title === "string" ? run.title : "";
+      return { id: run.run_id, kind: spec.kind, title: title };
+    });
+  }
+
+  // Reads the runs that need you or went stale, and tells about each new one once.
+  function checkNotify() {
+    if (!notifyOn || notifyInFlight) {
+      return;
+    }
+    notifyInFlight = true;
+    Promise.all(NOTIFY_STATES.map(function (spec) {
+      return apiFetch("/api/runs?limit=100&state=" + spec.state).then(function (payload) {
+        return alertsOf(spec, payload);
+      });
+    })).then(function (lists) {
+      if (!notifyOn) {
+        return;
+      }
+      const result = freshAlerts(notifySeen, lists.flat());
+      notifySeen = result.seen;
+      storeNotifySeen(result.seen);
+      for (const alert of result.fresh) {
+        showNotification(alert, NOTIFY_STATES.find((spec) => spec.kind === alert.kind).text);
+      }
+    }, function () {}).finally(function () {
+      notifyInFlight = false;
+    });
+  }
+
+  function bindNotify() {
+    notifySeen = readNotifySeen();
+    notifyOn = readNotifyOn() && notifySupported() &&
+      globalThis.Notification.permission === "granted";
+    renderNotifyToggle();
+    document.getElementById("notify-toggle").addEventListener("click", onNotifyToggle);
+  }
+
   // Runs when the server answered: after a success, or after a 4xx.
   function onServerReachable() {
     state.noticeKind = null;
@@ -5289,6 +5458,10 @@
       lastPollAt = nowMs;
       pollView();
     }
+    if (nowMs - lastNotifyAt >= POLL_IDLE_MS) {
+      lastNotifyAt = nowMs;
+      checkNotify();
+    }
   }
 
   // Whether a change to these runs can alter the open view. A run page cares only about its
@@ -5305,6 +5478,7 @@
     } catch {
       runs = null;
     }
+    lastNotifyAt = 0;
     if (!changeTouchesView(state.view, state.runId, runs)) {
       return;
     }
@@ -5884,6 +6058,7 @@
       applyTheme(next);
       storeTheme(next);
     });
+    bindNotify();
     bindStopControl();
     bindSteerControl();
     escalateControls().send.addEventListener("click", onEscalateSend);

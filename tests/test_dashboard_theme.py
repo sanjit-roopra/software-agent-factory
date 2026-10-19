@@ -224,8 +224,8 @@ def test_the_theme_is_stored_under_one_key() -> None:
     assert 'const THEME_STORAGE_KEY = "factory-dashboard-theme";' in dashboard_assets.APP_JS
 
 
-#: Each storage call: the function that makes it and the key it uses. The theme and
-#: the Steps view (reduced or full) are the only things the page remembers.
+#: Each storage call: the function that makes it and the key it uses. The theme, the Steps
+#: view, the diff view and the notification choice and memory are all the page remembers.
 STORAGE_FUNCTIONS = (
     ("getItem", "readStoredTheme", "THEME_STORAGE_KEY"),
     ("setItem", "storeTheme", "THEME_STORAGE_KEY"),
@@ -233,6 +233,10 @@ STORAGE_FUNCTIONS = (
     ("setItem", "storeStepsDetail", "STEPS_DETAIL_KEY"),
     ("getItem", "readDiffSplit", "DIFF_VIEW_KEY"),
     ("setItem", "storeDiffSplit", "DIFF_VIEW_KEY"),
+    ("getItem", "readNotifyOn", "NOTIFY_STORAGE_KEY"),
+    ("setItem", "storeNotifyOn", "NOTIFY_STORAGE_KEY"),
+    ("getItem", "readNotifySeen", "NOTIFY_SEEN_KEY"),
+    ("setItem", "storeNotifySeen", "NOTIFY_SEEN_KEY"),
 )
 
 
