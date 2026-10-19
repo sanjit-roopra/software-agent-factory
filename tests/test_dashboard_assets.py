@@ -263,12 +263,28 @@ def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
     assert re.search(r"main\s*\{[^}]*min-width:\s*0;", css)
     assert re.search(r"dd\s*\{[^}]*overflow-wrap:\s*anywhere;", css)
     assert "overflow-x: hidden" not in css
-    # The only clips are the reason block, the title of the run list and the last tool of
-    # the running call, each cut to one line.
+    # The only clips are the screen-reader text, the reason block, the title of the run
+    # list, the last tool of the running call and the run list cells, each cut to one line.
+    # The screen-reader text clips so its absolute box never widens the page.
     clipped = re.findall(r"([^{}]+)\{[^}]*overflow: hidden", css)
     assert [selector.strip() for selector in clipped] == [
-        ".clamp,\n#runs-table td:first-child a,\n.live-tool"
+        ".visually-hidden",
+        "#runs-table td",
+        "#runs-table td:first-child a",
+        ".clamp,\n.live-tool",
+        "#runs-table thead th",
     ]
+
+
+def test_the_run_list_keeps_a_fixed_layout_inside_its_card() -> None:
+    css = dashboard_assets.STYLE_CSS
+    assert "#runs-table { table-layout: fixed; min-width: 56rem; }" in css
+    assert re.search(
+        r"#runs-table td\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;", css
+    )
+    media = re.search(r"@media \(max-width: 1360px\) \{(.*?)\n\}", css, re.DOTALL)
+    assert media is not None
+    assert re.search(r"#runs-table th:nth-child\(5\), [^{]*\{\s*width: 0;", media.group(1))
 
 
 def test_sidebar_collapses_to_a_top_bar_under_900px() -> None:
@@ -1737,8 +1753,12 @@ def test_a_run_row_stays_on_one_line_and_cuts_title_and_reason() -> None:
     css = dashboard_assets.STYLE_CSS
     assert re.search(r"#runs-table td\s*\{[^}]*white-space:\s*nowrap;", css)
     assert re.search(
-        r"\.clamp,\s*#runs-table td:first-child a,\s*\.live-tool\s*\{[^}]*display:\s*inline-block;"
-        r"[^}]*text-overflow:\s*ellipsis;",
+        r"#runs-table td:first-child a\s*\{[^}]*display:\s*inline-block;[^}]*max-width:\s*100%;"
+        r"[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap;",
+        css,
+    )
+    assert re.search(
+        r"\.clamp,\s*\.live-tool\s*\{[^}]*display:\s*inline-block;[^}]*text-overflow:\s*ellipsis;",
         css,
     )
     assert 'className: "why-cell"' in function_source(_JS, "whyCell")

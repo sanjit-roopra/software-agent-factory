@@ -132,7 +132,9 @@ The run list puts these runs at the top, under a "Needs you" row. Each run says 
 **Needs retry**, **Needs attempt**, **Needs acceptance**, **Needs scope approval**, or **Stopped, needs you**. A filled badge means the page can
 act on the run. A run the page cannot act on, for example after its reply window
 expired, says **Stopped, needs you**. A stopped run gives a `factory show` command to copy and run in
-a terminal. While a run needs you, the browser tab title starts with the count,
+a terminal. The "Needs you" row counts the waiting runs on the page. When more runs
+wait than one page shows, it says so, for example "Needs you · 15 of 18". It then links to
+the list of all runs that need you. While a run needs you, the browser tab title starts with the count,
 for example `(2)`, and the tab icon shows a dot.
 
 - For a risk approval, choose **Approve**. A dialog shows the decision

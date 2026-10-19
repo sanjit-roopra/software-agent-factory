@@ -213,7 +213,7 @@
     evidenceDrawn: { checks: null, review: null, plan: null, diff: null },
     evidence: { plan: null, diff: null }, runDetail: null, diffAttempt: null, checksAttempt: null, diffKey: null,
     search: EMPTY_SEARCH, tab: DEFAULT_TAB, selectedRunId: null, pendingGo: false,
-    projectsListed: false
+    projectsListed: false, shownRuns: null
   };
   // Per view: seq numbers the latest request, inFlight counts unfinished ones.
   const requests = Object.fromEntries(Object.keys(VIEWS).map(function (name) {
@@ -454,8 +454,14 @@
     const shown = isFiniteNumber(needsYouCount) && needsYouCount > 0;
     badge.hidden = !shown;
     setText(badge, shown ? String(needsYouCount) : "");
-    state.needsYouCount = shown ? needsYouCount : 0;
+    const count = shown ? needsYouCount : 0;
+    const changed = count !== state.needsYouCount;
+    state.needsYouCount = count;
     renderAlert();
+    // The run list heading quotes this count, so it follows when the count lands later.
+    if (changed && state.shownRuns !== null) {
+      renderRuns(...state.shownRuns);
+    }
   }
 
   // "(2) Runs — Factory dashboard" while two runs need the operator.
@@ -1337,20 +1343,35 @@
     })];
   }
 
-  function groupRowSpec(label) {
-    return { className: "group-row", cells: [{ value: label, colSpan: RUNS_COLUMN_COUNT }] };
+  function groupRowSpec(cell) {
+    const entry = isPlainObject(cell) ? cell : { value: cell };
+    return { className: "group-row", cells: [{ ...entry, colSpan: RUNS_COLUMN_COUNT }] };
+  }
+
+  // The inbox heading counts the waiting runs on this page. When the nav badge counts
+  // more, it says "15 of 18" and links to the needs-you filter, which lists them all.
+  function needsYouHeading(waiting, total) {
+    if (!isFiniteNumber(total) || total <= waiting) {
+      return { value: "Needs you \u00b7 " + waiting };
+    }
+    return {
+      href: "#runs?filter=" + FILTER_NEEDS_YOU,
+      value: "Needs you \u00b7 " + waiting + " of " + total,
+      hidden: "",
+      title: "Show all " + total + " runs that need you"
+    };
   }
 
   // The runs that need the operator sit under their own group row, the inbox, above the
   // others. A filtered list, or one with no such run or only such runs, has no group rows.
-  function runListSpecs(runs, filter, nowMs) {
+  function runListSpecs(runs, filter, nowMs, needsYouTotal) {
     const specs = runs.map(function (run) { return runRowSpec(run, nowMs); });
     const waiting = runs.filter(needsYou).length;
     if (filter !== null || waiting === 0 || waiting === runs.length) {
       return specs;
     }
     return [
-      groupRowSpec("Needs you (" + waiting + ")"),
+      groupRowSpec(needsYouHeading(waiting, needsYouTotal)),
       ...specs.slice(0, waiting),
       groupRowSpec("Other runs"),
       ...specs.slice(waiting)
@@ -1414,9 +1435,13 @@
 
   function renderRuns(payload, request) {
     loadedViews.add("runs");
+    state.shownRuns = [payload, request];
     const runs = orderRuns(asArray(payload.runs), request.filter);
     const nowMs = Date.now();
-    syncRows(document.getElementById("runs-body"), runListSpecs(runs, request.filter, nowMs));
+    syncRows(
+      document.getElementById("runs-body"),
+      runListSpecs(runs, request.filter, nowMs, state.needsYouCount)
+    );
     markSelectedRow();
     renderRunsPager(payload.page || {}, runs.length, request);
     renderRunsStatus(runs.length, request);
