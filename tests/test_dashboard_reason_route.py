@@ -132,6 +132,7 @@ def test_the_page_offers_the_whole_reason_of_a_cut_attempt_or_call() -> None:
         JsCall("recordReason", ("run-001", "attempt=2", "cut text", True)),
         JsCall("recordReason", ("run-001", "attempt=1", "short", False)),
         JsCall("recordReason", (None, "call=4", "cut text", True)),
+        JsCall("recordReason", ("run-001", "call=null", "cut text", True)),
     ]
 
     values = [result.value for result in run_functions(dashboard_assets.APP_JS, calls)]
@@ -140,6 +141,7 @@ def test_the_page_offers_the_whole_reason_of_a_cut_attempt_or_call() -> None:
         {"text": "cut text", "query": "attempt=2", "shown": "cut text", "cut": True},
         {"text": "short", "query": "attempt=1", "shown": "short", "cut": False},
         {"text": "cut text", "query": "call=4", "shown": "cut text", "cut": False},
+        {"text": "cut text", "query": "call=null", "shown": "cut text", "cut": False},
     ]
     loader = function_source(dashboard_assets.APP_JS, "showRecordReason")
     assert 'reasonPath(runId) + "?" + query' in loader

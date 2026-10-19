@@ -2838,6 +2838,7 @@
   };
 
   const SHOW_REASON_LABEL = "Show full failure reason";
+  const RECORD_QUERY = /^(attempt|call)=[1-9]\d{0,3}$/;
 
   // ---- Run detail: stop (ADR-047) -----------------------------------------
 
@@ -3483,9 +3484,11 @@
   // ---- Run detail: attempt and call reasons (ADR-062) ---------------------
 
   // The reason to show for one attempt or call: the whole text once loaded for the same
-  // cut text, and whether "Show full failure reason" can still load it.
+  // cut text, and whether "Show full failure reason" can still load it. A record without
+  // a number cannot be asked for.
   function recordReason(runId, query, reason, truncated) {
-    const cut = truncated === true && typeof reason === "string" && runId !== null;
+    const cut = truncated === true && typeof reason === "string" && runId !== null &&
+      RECORD_QUERY.test(query);
     const cached = cut ? state.recordReasons[runId + "?" + query] : undefined;
     const full = cached?.cut === reason ? cached.text : null;
     return { text: full ?? reason, query: query, shown: reason, cut: cut && full === null };
@@ -4524,6 +4527,7 @@
       state.diffKey = null;
       state.runDetail = null;
       state.evidence = { plan: null, diff: null };
+      state.recordReasons = {};
     }
     state.runId = runId;
     applyRunsFilter(route.filter ?? null, route.offset ?? 0);
