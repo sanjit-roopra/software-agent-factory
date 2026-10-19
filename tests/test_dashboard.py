@@ -1765,6 +1765,7 @@ def test_adversarial_run_detail_provider_secrets_never_reach_response() -> None:
             "outcome",
             "headline",
             "stage",
+            "looping",
         }
         assert "logs" not in payload
         assert "diff" not in payload
@@ -2924,7 +2925,15 @@ def test_malformed_request_line_gets_400_and_logs_without_crashing(
 
 #: What the run list view adds to a sanitized run summary: the outcome, the reason line,
 #: the models of the calls and their total length.
-RUN_SUMMARY_VIEW_FIELDS = {"outcome", "stage", "why", "models", "duration_ms", "tokens"}
+RUN_SUMMARY_VIEW_FIELDS = {
+    "outcome",
+    "stage",
+    "why",
+    "models",
+    "duration_ms",
+    "tokens",
+    "looping",
+}
 CALL_FIELD_ORDER = [
     "invocation_number",
     "role",

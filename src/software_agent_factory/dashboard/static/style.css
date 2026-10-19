@@ -504,6 +504,8 @@ button:disabled {
   text-decoration: none;
 }
 #runs-table td:first-child a:hover { text-decoration: underline; }
+/* The title takes the whole cell, so its chips go on a line of their own to stay in view. */
+#runs-table td:first-child .chips { display: block; margin-left: 0; }
 .why-cell { min-width: 10rem; }
 .why-cell.muted { color: var(--text-muted); }
 .clamp,

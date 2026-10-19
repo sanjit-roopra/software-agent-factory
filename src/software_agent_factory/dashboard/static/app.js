@@ -1170,7 +1170,7 @@
   }
 
   // The route (the default full one only with "everyRoute"), the last escalation,
-  // unattended, restarts and needs look, each as a short chip.
+  // unattended, restarts, needs look and possibly looping, each as a short chip.
   function runChips(run, everyRoute = false) {
     const chips = [];
     const route = preferDefined(run.effective_route, run.initial_route);
@@ -1194,6 +1194,10 @@
     const reasons = asArray(run.needs_look);
     if (reasons.length > 0) {
       chips.push({ text: "needs look", title: reasons.join("\n") });
+    }
+    // The server sets it only for an active run whose last attempts repeat (ADR-071).
+    if (typeof run.looping === "string" && run.looping !== "") {
+      chips.push({ text: "possibly looping", title: run.looping, failed: true });
     }
     return chips;
   }

@@ -693,6 +693,12 @@ STATUS_CASES = [
         {"initial_route": "MANUAL_TRIAGE", "restart_recoveries": 1},
     ),
     _chips(
+        "a-looping-run-has-a-warning-chip-naming-the-repeat",
+        [{"text": "possibly looping", TITLE: "CI failed 3 times in a row", "failed": True}],
+        {"looping": "CI failed 3 times in a row"},
+    ),
+    _chips("no-looping-note-has-no-chip", [], {"looping": None}),
+    _chips(
         "failed-escalation-is-a-warning-chip",
         [{"text": "escalation failed", TITLE: _FAILED_ESCALATION_TEXT, "failed": True}],
         {"operator_escalation": _FAILED_ESCALATION},

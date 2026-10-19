@@ -11,6 +11,7 @@ from typing import Any
 
 from ..models import WorkflowState
 from .aggregate import call_total_tokens, compare_roles, models_of, models_summary, run_totals
+from .looping import active_looping_note
 from .next_step import NextStepKind, next_step
 from .overview import (
     flag_failing_call,
@@ -23,6 +24,7 @@ from .overview import (
 from .pending import sanitize_pending
 from .sanitize import (
     is_active_status,
+    sanitize_attempt,
     sanitize_project,
     sanitize_run_detail,
     sanitize_run_summary,
@@ -70,7 +72,8 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
     waiting run asks for them. The finished call a failed run most likely failed on carries
     ``failure_link`` (see :func:`.overview.flag_failing_call`). The headline of an active run
     names the role of its active call. A waiting run the page cannot act on says
-    ``Stopped, needs you``, whatever its resume classification.
+    ``Stopped, needs you``, whatever its resume classification. ``looping`` says why an
+    active run looks like it repeats itself (:mod:`.looping`), else ``None``.
     """
     detail = sanitize_run_detail(raw)
     detail.update(sanitize_pending(raw))
@@ -84,6 +87,7 @@ def run_detail_view(raw: Any, requests_for: RequestsFor | None = None) -> dict[s
     judged = detail if resumable else {**detail, "resume_classification": None}
     detail["outcome"] = run_outcome(judged)
     detail["headline"] = headline(judged, role)
+    detail["looping"] = active_looping_note(detail["outcome"], detail.get("attempts", ()))
     return detail
 
 
@@ -110,13 +114,21 @@ def run_summary_view(raw: Any) -> dict[str, Any]:
     keeps only the cost totals the list shows (:data:`LIST_USAGE_FIELDS`); ``tokens`` is the
     run's total tokens, ``None`` when no call reported any. ``stage`` (see
     :func:`.overview.run_stage`) replaces ``active_role``. ``duration_ms`` is the agent time;
-    the page shows the wall-clock time from ``created_at`` and ``completed_at``.
+    the page shows the wall-clock time from ``created_at`` and ``completed_at``. ``looping``
+    reads the row's ``recent_attempts`` (:mod:`.looping`); the attempts themselves are not sent.
     """
     run = sanitize_run_summary(raw)
     calls = run.pop("calls", [])
     run["outcome"] = run_outcome(run)
     run["stage"] = run_stage(run, run.pop("active_role", None))
     run["why"] = reason_line(run)
+    recent = raw.get("recent_attempts") if isinstance(raw, dict) else None
+    attempts = (
+        [sanitize_attempt(item, run_id_of(run)) for item in recent]
+        if isinstance(recent, list)
+        else []
+    )
+    run["looping"] = active_looping_note(run["outcome"], attempts)
     if run["why"] is not None:
         run.pop("failure_reason", None)
         run.pop("failure_reason_truncated", None)

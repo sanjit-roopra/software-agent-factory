@@ -1,5 +1,45 @@
 # Architecture Decisions
 
+## ADR-071: Show a possibly looping chip on an active run that repeats
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The workflow notices a review impasse only when the run halts, through the
+`REPEATED_PATH` and `REPEATED_FINDING` checks of the review ledger. Until then
+a run can spend attempt after attempt on the same failure, and the dashboard
+shows it only as active. The operator learns of the loop after the budget is gone.
+
+### Decision
+
+The dashboard reads the last three attempt records of an active or stale run.
+It flags the run when each of the three failed with a reason whose first 80
+characters match, after it folds white space. It also flags the run when the same
+retry trigger started each of the three: implementer failure, verification, review,
+scope or CI. The run list row and the run page get a red `possibly looping` chip.
+Its tooltip names the repeat, for example `Review sent the work back 3 times in a row`.
+On the run list, the chips of a row now sit on a line under its title. Before, a long
+title hid them.
+
+The run summary carries `recent_attempts`: the last three attempt records of an
+unfinished run, or none. The dashboard reads them to build the row's `looping`
+text and does not send them on. The run page reads its full attempt history. No
+new file or field is stored. The attempt summary model moves to
+`attempt_summary.py`, so `observability.py` gets smaller.
+
+Attempt records do not hold the failing check command or the changed files, so
+the chip does not compare those. The saved change set lists every changed file of
+the run so far. It is the same across most review rounds, so it flags
+healthy runs too if the chip read it.
+
+### Consequences
+
+The chip is a hint and changes nothing in the run. A run with two failures in a
+row gets no chip. A run that loops in a way the attempt records cannot show gets
+no chip either. A stopped run never shows the chip, because its halt reason already
+says why it stopped.
+
 ## ADR-070: Keep call prompts behind a flag and show them on the Steps view
 
 Status: accepted on 2026-10-19. This amends ADR-047.

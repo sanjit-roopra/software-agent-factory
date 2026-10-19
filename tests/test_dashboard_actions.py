@@ -1455,6 +1455,7 @@ PACKAGE = "software_agent_factory"
 #: writers are in ``resume_writes``, which is not on the list. From ``transcripts`` the
 #: dashboard takes only the event preview and the cut marker.
 ALLOWED_PACKAGE_MODULES = {
+    "attempt_summary",
     "models",
     RESUME,
     "resume_classes",
