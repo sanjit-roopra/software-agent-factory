@@ -20,6 +20,7 @@ from .models import (
     ModelBase,
     ReviewReport,
     Specification,
+    TestReport,
     VerificationReport,
 )
 from .observability import RunStoreProtocol, _load_optional_artifact
@@ -40,7 +41,8 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
     """One run's check output and review text, or ``None`` if the run is not readable.
 
     The checks are the latest verification and CI reports, plus the per-attempt
-    history of each (the last :data:`HISTORY_LIMIT` attempts that saved one). The
+    history of each and the tester's verdict per attempt (the last
+    :data:`HISTORY_LIMIT` attempts that saved one). The
     review has one round per attempt that saved a review, each finding with its
     ledger id, plus the open and accepted findings of the review ledger. The plan
     part is the latest saved specification, execution plan and change set, each
@@ -67,6 +69,10 @@ def build_run_evidence(store: RunStoreProtocol, run_id: str) -> dict[str, Any] |
         "ci_history": [
             {"attempt": number, "overall": report.overall, "checks": _dumped(report.checks)}
             for number, report in _history(store, run, CIReport)
+        ],
+        "tester_history": [
+            {"attempt": number, "passed": report.passed, "skipped": report.skipped}
+            for number, report in _history(store, run, TestReport)
         ],
         "review_rounds": [
             _review_round(number, review) for number, review in _history(store, run, ReviewReport)

@@ -23,6 +23,7 @@ from software_agent_factory.models import (
     ReviewFindingDraft,
     ReviewReport,
     ReviewSourceLocation,
+    TestReport,
     VerificationReport,
     WorkflowState,
 )
@@ -226,3 +227,18 @@ def test_disposition_statuses_have_words() -> None:
     js = dashboard_assets.APP_JS
     for status in ReviewDispositionStatus:
         assert f"{status.value}:" in js
+
+
+def test_tester_history_keeps_each_attempts_verdict_and_nothing_else(tmp_path: Path) -> None:
+    store = FileRunStore(tmp_path)
+    run = _run(store, 2)
+    store.save_artifact(run.id, TestReport(passed=False, findings=["x"], confidence=0.5), attempt=2)
+
+    evidence = build_run_evidence(store, run.id)
+
+    assert evidence is not None
+    assert evidence["tester_history"] == [{"attempt": 2, "passed": False, "skipped": False}]
+    raw = {"tester_history": [{"attempt": 2, "passed": True, "findings": ["x"]}, {"attempt": 0}]}
+    assert sanitize_run_checks(raw)["tester_history"] == [
+        {"attempt": 2, "passed": True, "skipped": False}
+    ]

@@ -262,7 +262,11 @@ def render_index_html(*, token: str) -> str:
           aria-labelledby="run-tab-activity" hidden>
           <p class="tab-empty">Nothing to show here yet.</p>
           <div class="card">
-            <h2 id="timeline-heading">Steps</h2>
+            <div class="diff-head">
+              <h2 id="timeline-heading">Steps</h2>
+              <button id="steps-view-toggle" type="button" aria-pressed="false"
+                aria-controls="timeline-table">Show all detail</button>
+            </div>
             <p id="timeline-status">No calls yet.</p>
             <div class="table-wrap" id="timeline-wrap" hidden>
               <table id="timeline-table" class="timeline" aria-labelledby="timeline-heading">

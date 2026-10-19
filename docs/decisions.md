@@ -1,5 +1,42 @@
 # Architecture Decisions
 
+## ADR-066: A short Steps view, and what each step did
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The Steps list showed seven columns for every call. Most of the time an operator only
+wants to see which roles ran, how each ended and how long each took. The list did not
+say what a step did: which files a call wrote, which checks its attempt ran, or whether
+the reviewer approved it. Copilot coding agent and Devin both show a short step list
+first and the detail on request.
+
+### Decision
+
+The Steps list starts in a short view: one line per call with a role icon, the role, the
+outcome and the duration bar. The model, tokens, cost and the total row show after a
+person presses "Show all detail". The page keeps that choice in browser storage, under its
+own key, inside `try`/`catch` like the theme. The icons are inline SVG paths in `app.js`,
+so the page loads nothing from outside.
+
+A reviewer or tester line adds the verdict on its attempt. An open call lists the files
+it wrote, the checks of its attempt and that verdict. The page finds the attempt of a
+call by counting the attempts that started no later than the call. That count is the
+`attempts/NN` number that the saved reports use. The files come from the call's tool
+calls whose tool writes a file. The checks and the review verdict come from the
+`/checks` and `/review` answers that the page already loads.
+
+The tester's result was not in any answer, so `GET /api/runs/<id>/checks` adds
+`tester_history`: the attempt, `passed` and `skipped` of each saved tester report. Its
+findings stay out.
+
+### Consequences
+
+The page makes no new request for a step. A call that saved no tool calls, as older runs
+did, shows no files. A verdict shows only while its attempt is in the saved reports.
+No new write action is added.
+
 ## ADR-065: Sort the run list by any main column, and let n and f leave the page
 
 Status: accepted on 2026-10-19.

@@ -1589,7 +1589,8 @@ and keeps the start and the end (ADR-033). The page can ask
 20,000 characters (ADR-046). With `?attempt=n` or `?call=n` the same route
 returns the whole reason of one attempt or one call (ADR-062). The Checks card asks `GET /api/runs/<id>/checks`
 for each verification and CI check with the last 80 lines of its output, at
-most 8 KB. The Review card asks `GET /api/runs/<id>/review` for each review
+most 8 KB. The same answer gives the tester's verdict per attempt: only
+passed and skipped, for the Steps list (ADR-066). The Review card asks `GET /api/runs/<id>/review` for each review
 round and the open and accepted findings, each text cut to 2,000 characters.
 The Plan card asks `GET /api/runs/<id>/plan` for the goal, the plan steps, the
 expected scope and the change set, each text cut to 2,000 characters. The
