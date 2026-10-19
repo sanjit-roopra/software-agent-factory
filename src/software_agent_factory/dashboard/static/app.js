@@ -2102,17 +2102,32 @@
   }
 
   // What the reviewer or the tester decided about the attempt, from the saved reports.
+  function stepReviewVerdict(round) {
+    if (!round) {
+      return "";
+    }
+    if (round.skipped) {
+      return "review skipped";
+    }
+    return round.approved ? "approved" : "changes requested";
+  }
+
+  function stepTesterVerdict(result) {
+    if (!result) {
+      return "";
+    }
+    if (result.skipped) {
+      return "tester skipped";
+    }
+    return result.passed ? "tests passed" : "tests failed";
+  }
+
   function stepVerdict(call, index, evidence) {
     if (call.role === "REVIEWER") {
-      const round = entryFor(evidence.review?.rounds, "attempt_number", index);
-      if (round) {
-        return round.skipped ? "review skipped" : (round.approved ? "approved" : "changes requested");
-      }
-    } else if (call.role === "TESTER") {
-      const result = entryFor(evidence.checks?.tester_history, "attempt", index);
-      if (result) {
-        return result.skipped ? "tester skipped" : (result.passed ? "tests passed" : "tests failed");
-      }
+      return stepReviewVerdict(entryFor(evidence.review?.rounds, "attempt_number", index));
+    }
+    if (call.role === "TESTER") {
+      return stepTesterVerdict(entryFor(evidence.checks?.tester_history, "attempt", index));
     }
     return "";
   }
