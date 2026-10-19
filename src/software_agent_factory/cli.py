@@ -76,7 +76,6 @@ if TYPE_CHECKING:
     from .models import (
         DashboardResumeRequest,
         FactoryRun,
-        InvocationRecord,
         RunLaunch,
         RuntimeName,
         ToolchainSetupPlan,
@@ -1411,15 +1410,10 @@ def dashboard_command(
     from .dashboard.pending import with_pending
     from .escalation_protocol import ReplyPolicy
     from .models import RunListFilter
-    from .observability import (
-        build_active_invocation_summary,
-        build_monitoring_snapshot,
-        build_run_detail,
-    )
+    from .observability import build_monitoring_snapshot, build_run_detail
     from .operational_health import build_operational_health
-    from .projects import FileProjectStore
+    from .project_summaries import ProjectSummaries
     from .run_evidence import build_run_diff, build_run_evidence
-    from .run_metrics import resolve_usage
     from .run_requests import build_steer_requester, build_stop_requester
     from .run_scan_cache import RunScanCache
     from .service_heartbeat import service_liveness
@@ -1468,88 +1462,13 @@ def dashboard_command(
             scan=scan_cache.get_scan(max_scanned_runs),
         )
 
-    def invocation_row(invocation: InvocationRecord) -> dict[str, object]:
-        # Resolve per-model usage so the project totals count it like a run's.
-        row = invocation.model_dump(mode="json")
-        if invocation.usage is not None:
-            row["usage"] = resolve_usage(invocation.usage).model_dump(mode="json")
-        return row
-
-    def project_provider() -> object:
-        projects_dir = factory_config.data_dir / "projects"
-        if not projects_dir.is_dir():
-            return {"projects": []}
-        execution_paths = sorted(
-            projects_dir.glob("*/execution.json"),
-            key=lambda path: path.stat().st_mtime,
-            reverse=True,
-        )[:max_scanned_runs]
-        project_store = FileProjectStore(factory_config.data_dir)
-        projects: list[dict[str, object]] = []
-        for execution_path in execution_paths:
-            project_id = execution_path.parent.name
-            try:
-                execution = project_store.load_execution(project_id)
-                try:
-                    plan = project_store.load_plan(project_id)
-                    titles = {task.id: task.title for task in plan.tasks}
-                except (FileNotFoundError, OSError, ValueError):
-                    titles = {}
-            except (FileNotFoundError, OSError, ValueError):
-                continue
-            execution_data = execution.model_dump(mode="json")
-            tasks = [
-                {
-                    **task.model_dump(mode="json"),
-                    "title": titles.get(task.task_id),
-                }
-                for task in execution.tasks
-            ]
-            models: list[dict[str, object]] = []
-            for invocation in execution.invocation_records:
-                models.append({**invocation_row(invocation), "scope": "project", "task_id": None})
-            for task in execution.tasks:
-                if task.run_id is None:
-                    continue
-                try:
-                    run = store.load_run(task.run_id)
-                except (FileNotFoundError, OSError, ValueError):
-                    continue
-                scope = {"scope": f"task {task.task_id}", "task_id": task.task_id}
-                for invocation in run.invocation_records:
-                    models.append({**invocation_row(invocation), **scope})
-                active_invocation = build_active_invocation_summary(
-                    run,
-                    stale_after=stale_after,
-                )
-                if active_invocation is not None:
-                    models.append(
-                        {
-                            **active_invocation.model_dump(mode="json"),
-                            **scope,
-                            "success": None,
-                            "completed_at": None,
-                            "usage": None,
-                        }
-                    )
-            projects.append(
-                {
-                    "project_id": execution_data["project_id"],
-                    "state": execution_data["state"],
-                    "delivery_mode": execution_data["delivery_mode"],
-                    "delivery_repository": execution_data["delivery_repository"],
-                    "delivery_base_branch": execution_data["delivery_base_branch"],
-                    "integration_branch": execution_data["integration_branch"],
-                    "created_at": execution_data["created_at"],
-                    "updated_at": execution_data["updated_at"],
-                    "completed_at": execution_data["completed_at"],
-                    "needs_look": execution_data["needs_look"],
-                    "task_count": len(tasks),
-                    "tasks": tasks,
-                    "models": models,
-                }
-            )
-        return {"projects": projects}
+    projects = ProjectSummaries(
+        factory_config.data_dir,
+        store,
+        scan_cache,
+        stale_after=stale_after,
+        max_scanned_runs=max_scanned_runs,
+    )
 
     try:
         create_server_fn = _seam("create_server")
@@ -1558,7 +1477,8 @@ def dashboard_command(
                 snapshot_provider=snapshot_provider,
                 run_detail_provider=run_detail_provider,
                 health_provider=health_provider,
-                project_provider=project_provider,
+                project_provider=projects.list,
+                project_detail_provider=projects.get,
                 run_evidence_provider=lambda run_id: build_run_evidence(store, run_id),
                 run_diff_provider=lambda run_id, attempt: build_run_diff(store, run_id, attempt),
                 run_transcript_provider=call_transcript_reader(store.runs_dir),

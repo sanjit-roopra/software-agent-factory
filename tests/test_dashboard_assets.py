@@ -283,9 +283,10 @@ def test_each_static_table_sits_in_a_table_wrap(table_id: str) -> None:
 def test_every_table_built_in_the_script_is_wrapped() -> None:
     js = dashboard_assets.APP_JS
     assert 'element("div", "table-wrap")' in function_source(js, "wrapTable")
-    callers = re.findall(r"(\w+)\((?:tasksTable|modelsTable)\(", js)
-    assert callers
-    assert set(callers) == {"wrapTable"}
+    assert "return wrapTable(table);" in function_source(js, "emptyTable")
+    assert 'document.createElement("table")' not in normalized(js).replace(
+        function_source(js, "emptyTable"), ""
+    )
 
 
 def test_table_wrap_scrolls_sideways_and_the_page_never_does() -> None:
@@ -430,7 +431,7 @@ def test_a_failed_first_load_shows_retry_and_a_loaded_view_keeps_its_data() -> N
     for renderer, view in (
         ("renderRuns", "runs"),
         ("renderHealth", "health"),
-        ("renderProjectsOnChange", "projects"),
+        ("renderProjects", "projects"),
     ):
         assert f'loadedViews.add("{view}");' in function_source(js, renderer)
     assert "showLoadFailure(" in function_source(js, "refreshRunDetail")
@@ -463,7 +464,8 @@ def test_refresh_patches_rows_and_text_in_place() -> None:
     for name in ("syncRows", "syncList", "syncDefinitionList", "setText"):
         assert f"function {name}(" in js
     assert "if (node.textContent !== text)" in normalized(js)
-    assert "signature !== lastProjectsSignature" in function_source(js, "renderProjectsOnChange")
+    assert "patchProjectCard(card, project);" in function_source(js, "renderProjects")
+    assert "syncRows(" in function_source(js, "patchProjectCard")
 
 
 @pytest.mark.parametrize(
@@ -684,7 +686,7 @@ def test_the_project_usage_value_comes_from_the_server_totals_not_a_client_sum()
     js = dashboard_assets.APP_JS
     assert "totalUsageValue" not in js
     assert "totals?.costs?.usage_value_usd" in function_source(js, "usageSummary")
-    assert "usageSummary(project.totals)" in function_source(js, "projectCard")
+    assert "usageSummary(project.totals)" in function_source(js, "patchProjectCard")
 
 
 # --------------------------------------------------------------------------
@@ -715,9 +717,9 @@ def test_unreported_cost_and_tokens_use_one_not_reported_constant() -> None:
 
 
 def test_project_model_rows_show_unreported_tokens_as_not_reported() -> None:
-    row = function_source(dashboard_assets.APP_JS, "modelRow")
-    assert "appendCell(row, displayNumber(usage.input_tokens));" in row
-    assert "appendCell(row, displayNumber(usage.output_tokens));" in row
+    row = function_source(dashboard_assets.APP_JS, "modelSpec")
+    assert "displayNumber(usage.input_tokens)," in row
+    assert "displayNumber(usage.output_tokens)," in row
 
 
 def test_an_empty_task_list_says_planning_only_in_a_planning_state() -> None:
@@ -727,8 +729,10 @@ def test_an_empty_task_list_says_planning_only_in_a_planning_state() -> None:
     assert "Planning is in progress" in message
     assert '"No tasks."' in message
     assert js.count("Planning is in progress") == 1
-    assert "emptyTasksText(projectState)" in function_source(js, "emptyTasksRow")
-    assert "tasksTable(asArray(project.tasks), project.state)" in function_source(js, "projectCard")
+    assert "emptyTasksText(projectState)" in function_source(js, "taskSpecs")
+    assert "taskSpecs(asArray(project.tasks), project.state)" in function_source(
+        js, "patchProjectCard"
+    )
 
 
 def test_the_run_view_uses_one_run_detail_stem_for_ids_functions_and_styles() -> None:
@@ -1155,7 +1159,7 @@ def test_the_run_detail_and_project_labels_say_call() -> None:
         js, "identityFields"
     )
     assert '["Calls with usage", usage.reported_invocations]' in function_source(js, "usageFields")
-    assert '"No calls yet."' in function_source(js, "projectCard")
+    assert '"No calls yet."' in function_source(js, "renderProjectCalls")
 
 
 # --------------------------------------------------------------------------
@@ -2463,3 +2467,16 @@ def test_steer_refusals_have_their_own_words(action: str) -> None:
     values = [result.value for result in run_functions(_JS, calls)]
     assert values[0] == "the note is empty, too long or holds a secret"
     assert values[1] == values[2]
+
+
+def test_the_projects_view_loads_a_projects_calls_only_while_its_section_is_open() -> None:
+    js = dashboard_assets.APP_JS
+    load = function_source(js, "loadProjectCalls")
+    assert 'apiFetch("/api/projects/" + encodeURIComponent(card.dataset.projectId))' in load
+    assert "if (calls.open)" in function_source(js, "projectCard")
+    assert "if (calls.open)" in function_source(js, "patchProjectCard")
+
+
+def test_the_script_declares_each_function_name_once() -> None:
+    names = re.findall(r"\bfunction (\w+)\(", dashboard_assets.APP_JS)
+    assert sorted({name for name in names if names.count(name) > 1}) == []

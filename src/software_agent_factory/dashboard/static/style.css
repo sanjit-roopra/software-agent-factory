@@ -195,6 +195,7 @@ tr[data-run-id]:hover, tr[data-run-id]:focus-within { background: var(--surface-
 .project-card h3 { margin: 0 0 0.5rem; }
 .project-meta { margin: 0 0 0.75rem; color: var(--text-muted); }
 .project-card .table-wrap { margin-top: 0.5rem; }
+.project-calls summary { cursor: pointer; }
 .stale-yes { color: var(--warn); font-weight: 600; }
 #runs-toolbar, .compare-pager { margin-bottom: 0.75rem; display: flex; gap: 0.75rem; align-items: center; }
 #notice {

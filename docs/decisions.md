@@ -1,5 +1,40 @@
 # Architecture Decisions
 
+## ADR-078: Send a short summary per project and load its calls on demand
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+`GET /api/projects` read the `run.json` of each project task one by one on each
+poll, and it sent every call of every project. With 22 projects the answer was
+about 250 KB on each poll. The page then built the whole Projects view again
+whenever any byte changed, so an open table lost its scroll place.
+
+### Decision
+
+The project reads move out of `cli.py` into `project_summaries.py`. They take the
+runs of project tasks from the dashboard's shared run scan cache. That cache parses a
+`run.json` again only when its change time, size or inode changed. A task run
+that the scan does not hold, because it is older than the scan limit, is read from
+the store.
+
+`GET /api/projects` sends one summary per project: its fields, its tasks, the
+`totals` of its finished calls, `active_calls` and `last_activity_at`. It does
+not send `models`. `GET /api/projects/<id>` sends one project with its `models`
+and `totals`, with the same allowlist and redaction as before. An unknown or
+invalid project id is a 404.
+
+The page keeps one card for each project and changes only the text and rows
+that changed. The calls of a project are in a closed Calls section. The page
+asks for them when a person opens it, and again on each poll while it stays open.
+
+### Consequences
+
+On the data that showed the problem, the list answer went from about 250 KB to
+about 56 KB. One project's calls are at most about 37 KB. A poll parses no
+`run.json` that the run list already parsed. No dashboard write action changes.
+
 ## ADR-077: Push run changes to the dashboard over one event stream
 
 Status: accepted on 2026-10-19.
