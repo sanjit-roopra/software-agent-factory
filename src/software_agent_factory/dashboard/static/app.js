@@ -241,7 +241,6 @@
     return [name, { seq: 0, inFlight: 0 }];
   }));
   let lastSuccessAt = null;
-  let lastProjectsSignature = null;
   // The views that have drawn data once. A failed load shows Retry only before that.
   const loadedViews = new Set();
 
@@ -632,16 +631,6 @@
     link.target = "_blank";
     link.rel = "noopener noreferrer";
     return link;
-  }
-
-  function appendCell(row, value, asLink) {
-    const cell = row.appendChild(document.createElement("td"));
-    if (asLink && isHttpsUrl(value)) {
-      cell.appendChild(createLink(value));
-    } else {
-      cell.textContent = displayValue(value);
-    }
-    return cell;
   }
 
   function tableHeader(labels) {
@@ -1600,11 +1589,14 @@
 
   // ---- Projects view -----------------------------------------------------
 
+  // The list sends each project's rollup; its calls load from /api/projects/<id> only
+  // while its "Calls" section is open (ADR-078). Each poll patches the cards in place.
+
   function projectMeta(project) {
     return "Delivery: " + displayValue(project.delivery_mode) +
       " | Target: " + displayValue(project.delivery_repository) +
       "#" + displayValue(project.delivery_base_branch) +
-      " | Updated: " + displayValue(project.updated_at);
+      " | Last activity: " + displayValue(project.last_activity_at ?? project.updated_at);
   }
 
   // Tasks are saved after planning, so an empty list is only expected while
@@ -1616,63 +1608,41 @@
     return "No tasks.";
   }
 
-  function emptyTasksRow(projectState) {
-    const row = document.createElement("tr");
-    const cell = row.appendChild(element("td", "", emptyTasksText(projectState)));
-    cell.colSpan = TASK_HEADERS.length;
-    return row;
+  function linkEntry(value) {
+    return isHttpsUrl(value) ? { href: value, value: value, external: true } : value;
   }
 
-  function taskRow(task) {
-    const row = document.createElement("tr");
-    appendCell(row, task.task_id);
-    appendCell(row, task.title);
-    appendCell(row, task.state);
-    appendCell(row, task.run_id);
-    appendCell(row, task.issue_url, true);
-    appendCell(row, task.pull_request_url, true);
-    appendCell(row, task.merge_commit_sha);
-    return row;
-  }
-
-  function tasksTable(tasks, projectState) {
-    const table = document.createElement("table");
-    table.appendChild(tableHeader(TASK_HEADERS));
-    const body = table.appendChild(document.createElement("tbody"));
+  function taskSpecs(tasks, projectState) {
     if (tasks.length === 0) {
-      body.appendChild(emptyTasksRow(projectState));
+      return [{ cells: [{ value: emptyTasksText(projectState), colSpan: TASK_HEADERS.length }] }];
     }
-    for (const task of tasks) {
-      body.appendChild(taskRow(task));
-    }
-    return table;
+    return tasks.map(function (task) {
+      return {
+        cells: [
+          task.task_id, task.title, task.state, task.run_id,
+          linkEntry(task.issue_url), linkEntry(task.pull_request_url), task.merge_commit_sha
+        ]
+      };
+    });
   }
 
-  function modelRow(model) {
+  function modelSpec(model) {
     const usage = model.usage || {};
-    const row = document.createElement("tr");
-    appendCell(row, model.scope);
-    appendCell(row, roleText(model.role));
-    appendCell(row, model.model);
-    appendCell(row, model.purpose);
-    appendCell(row, model.status);
-    appendCell(row, model.started_at);
-    appendCell(row, displayNumber(usage.input_tokens));
-    appendCell(row, displayNumber(usage.output_tokens));
-    appendCell(row, moneyText(usage.usage_value_usd));
-    appendCell(row, displayNumber(usage.total_premium_request_cost));
-    appendCell(row, moneyText(usage.list_price_estimate_usd));
-    return row;
-  }
-
-  function modelsTable(models) {
-    const table = document.createElement("table");
-    table.appendChild(tableHeader(MODEL_HEADERS));
-    const body = table.appendChild(document.createElement("tbody"));
-    for (const model of models) {
-      body.appendChild(modelRow(model));
-    }
-    return table;
+    return {
+      cells: [
+        model.scope,
+        roleText(model.role),
+        model.model,
+        model.purpose,
+        model.status,
+        model.started_at,
+        displayNumber(usage.input_tokens),
+        displayNumber(usage.output_tokens),
+        moneyText(usage.usage_value_usd),
+        displayNumber(usage.total_premium_request_cost),
+        moneyText(usage.list_price_estimate_usd)
+      ]
+    };
   }
 
   function usageSummary(totals) {
@@ -1680,54 +1650,121 @@
     return "AI usage value: " + moneyText(usageValue?.total) + ". " + USAGE_NOTE;
   }
 
-  function projectCard(project) {
+  function projectCallsText(project) {
+    const failed = project.totals?.failed_calls?.total;
+    return displayNumber(project.totals?.calls ?? 0) + " finished, " +
+      displayNumber(failed ?? 0) + " failed, " +
+      displayNumber(project.active_calls ?? 0) + " in progress";
+  }
+
+  function emptyTable(headers) {
+    const table = document.createElement("table");
+    table.appendChild(tableHeader(headers));
+    table.appendChild(document.createElement("tbody"));
+    return wrapTable(table);
+  }
+
+  function renderProjectCalls(card, project) {
+    const body = card.querySelector(".project-calls > div");
     const models = asArray(project.models);
-    const card = element("article", "project-card");
-    card.appendChild(element(
-      "h3", "", displayValue(project.project_id) + " \u2014 " + displayValue(project.state)
-    ));
-    card.appendChild(element("p", "project-meta", projectMeta(project)));
-    for (const reason of asArray(project.needs_look)) {
-      card.appendChild(element("p", "project-meta", "Needs a look: " + displayValue(reason)));
-    }
-    card.appendChild(wrapTable(tasksTable(asArray(project.tasks), project.state)));
-    card.appendChild(element("h4", "", "Models used"));
-    card.appendChild(element("p", "project-meta", usageSummary(project.totals)));
     if (models.length === 0) {
-      card.appendChild(element("p", "", "No calls yet."));
-    } else {
-      card.appendChild(wrapTable(modelsTable(models)));
+      setText(body, "No calls yet.");
+      return;
     }
+    if (body.firstElementChild?.className !== "table-wrap") {
+      clearChildren(body);
+      body.appendChild(emptyTable(MODEL_HEADERS));
+    }
+    syncRows(body.querySelector("tbody"), models.map(modelSpec));
+  }
+
+  // The toggle and each poll may both ask; only the newest answer draws.
+  function loadProjectCalls(card) {
+    const seq = String(Number(card.dataset.callsSeq || 0) + 1);
+    card.dataset.callsSeq = seq;
+    return apiFetch("/api/projects/" + encodeURIComponent(card.dataset.projectId)).then(
+      function (project) {
+        if (card.dataset.callsSeq === seq) {
+          renderProjectCalls(card, project);
+        }
+      },
+      function () {
+        if (card.dataset.callsSeq === seq) {
+          setText(card.querySelector(".project-calls > div"), "The calls could not load.");
+        }
+      }
+    );
+  }
+
+  // A card's nodes are built once per project; each poll patches their text and rows.
+  function projectCard(projectId) {
+    const card = element("article", "project-card");
+    card.dataset.projectId = projectId;
+    card.append(
+      element("h3"),
+      element("p", "project-meta"),
+      element("div"),
+      emptyTable(TASK_HEADERS),
+      element("h4", "", "Models used"),
+      element("p", "project-meta")
+    );
+    const calls = card.appendChild(element("details", "project-calls"));
+    calls.append(element("summary"), element("div", "", "Loading…"));
+    calls.addEventListener("toggle", function () {
+      if (calls.open) {
+        void loadProjectCalls(card);
+      }
+    });
     return card;
   }
 
-  function renderProjects(payload) {
-    const container = document.getElementById("projects-body");
-    clearChildren(container);
-    const projects = asArray(payload.projects);
-    if (projects.length === 0) {
-      container.textContent = "No persisted projects.";
-      return;
-    }
-    for (const project of projects) {
-      container.appendChild(projectCard(project));
+  function patchProjectCard(card, project) {
+    const [title, meta, needs, tasks, , usage, calls] = card.children;
+    setText(title, displayValue(project.project_id) + " — " + displayValue(project.state));
+    setText(meta, projectMeta(project));
+    syncList(needs, asArray(project.needs_look).map(function (reason) {
+      return "Needs a look: " + displayValue(reason);
+    }));
+    syncRows(tasks.querySelector("tbody"), taskSpecs(asArray(project.tasks), project.state));
+    setText(usage, usageSummary(project.totals));
+    setText(calls.firstElementChild, "Calls: " + projectCallsText(project));
+    if (calls.open) {
+      void loadProjectCalls(card);
     }
   }
 
-  // The projects payload is nested and rebuilt wholesale, so an unchanged
-  // payload skips the rebuild and leaves the DOM as the operator left it.
-  function renderProjectsOnChange(payload) {
+  function renderProjects(payload) {
     loadedViews.add("projects");
-    const signature = JSON.stringify(payload);
-    if (signature !== lastProjectsSignature) {
-      renderProjects(payload);
-      lastProjectsSignature = signature;
+    const container = document.getElementById("projects-body");
+    const projects = asArray(payload.projects);
+    if (projects.length === 0) {
+      setText(container, "No persisted projects.");
+      return;
+    }
+    const cards = new Map();
+    for (const card of container.querySelectorAll("article.project-card")) {
+      cards.set(card.dataset.projectId, card);
+    }
+    if (cards.size === 0) {
+      clearChildren(container);
+    }
+    for (const [index, project] of projects.entries()) {
+      const id = String(project.project_id);
+      const card = cards.get(id) ?? projectCard(id);
+      cards.delete(id);
+      if (container.children[index] !== card) {
+        container.insertBefore(card, container.children[index] ?? null);
+      }
+      patchProjectCard(card, project);
+    }
+    for (const stale of cards.values()) {
+      stale.remove();
     }
   }
 
   function refreshProjects(request) {
     return apiFetch("/api/projects").then(
-      whenLatest(request, renderProjectsOnChange),
+      whenLatest(request, renderProjects),
       failBeforeLoad(request, "projects-body", "The projects could not load.")
     );
   }

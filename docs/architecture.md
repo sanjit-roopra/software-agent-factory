@@ -1629,6 +1629,13 @@ With no such run below on the page, they open the list of only those runs. On
 that list they open its next page. Either way they pick the first run. `/`
 searches, `r` refreshes and `?` lists the keys. Keys do nothing in a field.
 
+`GET /api/projects` sends one short summary for each project. It has the project
+fields, the tasks and the totals of the finished calls. It also has the number of
+calls in progress and the time of the last activity. It leaves out the list of calls. The Projects view
+asks `GET /api/projects/<id>` for the calls of one project only while its Calls
+section is open. An unknown project id is a 404. The server reads the runs of
+project tasks from the same run scan cache as the run list (ADR-078).
+
 There is one resume action for each resumable class. A person can approve a risk approval or answer
 plan decisions (ADR-033). A person can retry publishing when the first pull
 request failed to open (ADR-042). A person can grant one more attempt when the

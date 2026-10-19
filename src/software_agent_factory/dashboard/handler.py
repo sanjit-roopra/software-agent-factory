@@ -32,6 +32,7 @@ from .evidence import (
     sanitize_run_plan,
     sanitize_run_review,
 )
+from .projects_route import PROJECT_PATH_PATTERN, project_body, projects_body
 from .reason_route import reason_source, sanitize_full_reason
 from .responses import WriteRejected
 from .sanitize import sanitize_health, sanitize_run_detail
@@ -54,7 +55,7 @@ from .snapshot import (
     to_json_safe,
 )
 from .transcript_route import transcript_answer
-from .view import compare_view, project_view, run_detail_view, run_summary_view, summary_view
+from .view import compare_view, run_detail_view, run_summary_view, summary_view
 
 if TYPE_CHECKING:
     from .server import DashboardServer
@@ -439,33 +440,34 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         if path == "/api/runs":
             self._serve_runs(query, send_body)
             return
-        if path == "/api/projects":
-            self._serve_projects(send_body)
+        project_match = PROJECT_PATH_PATTERN.match(path)
+        if path == "/api/projects" or project_match:
+            self._serve_projects(project_match.group(1) if project_match else None, send_body)
             return
         if path == "/api/compare":
             self._serve_compare(query, send_body)
             return
-        detail_match = _RUN_DETAIL_PATTERN.match(path)
-        if detail_match:
-            self._serve_run_detail(detail_match.group(1), send_body)
-            return
-        reason_match = _RUN_REASON_PATTERN.match(path)
-        if reason_match:
-            self._serve_run_reason(reason_match.group(1), query, send_body)
-            return
-        evidence_match = _RUN_EVIDENCE_PATTERN.match(path)
-        if evidence_match:
-            self._serve_run_evidence(evidence_match.group(1), evidence_match.group(2), send_body)
-            return
-        diff_match = _RUN_DIFF_PATTERN.match(path)
-        if diff_match:
-            self._serve_run_diff(diff_match.group(1), query, send_body)
+        if self._route_run(path, query, send_body):
             return
         if path == EVENTS_PATH:
             serve_events(self, self.server, (*_SECURITY_HEADERS, _NO_STORE), send_body)
             return
         status, payload = transcript_answer(self.server, path)
         self._respond_json(status, payload, send_body)
+
+    def _route_run(self, path: str, query: dict[str, list[str]], send_body: bool) -> bool:
+        """Serve one run's detail, reason, evidence or diff; False when no run route matches."""
+        if match := _RUN_DETAIL_PATTERN.match(path):
+            self._serve_run_detail(match.group(1), send_body)
+        elif match := _RUN_REASON_PATTERN.match(path):
+            self._serve_run_reason(match.group(1), query, send_body)
+        elif match := _RUN_EVIDENCE_PATTERN.match(path):
+            self._serve_run_evidence(match.group(1), match.group(2), send_body)
+        elif match := _RUN_DIFF_PATTERN.match(path):
+            self._serve_run_diff(match.group(1), query, send_body)
+        else:
+            return False
+        return True
 
     def _serve_index(
         self, send_body: bool, *, extra_headers: tuple[tuple[str, str], ...] = ()
@@ -570,19 +572,13 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
         page["returned"] = len(runs)
         self._respond_json(HTTPStatus.OK, {"runs": runs, "page": page}, send_body)
 
-    def _serve_projects(self, send_body: bool) -> None:
-        provider = self.server.project_provider
-        if provider is None:
-            self._respond_json(HTTPStatus.OK, {"projects": []}, send_body)
-            return
+    def _serve_projects(self, project_id: str | None, send_body: bool) -> None:
+        """Every project's rollup, or one project with its calls (ADR-078)."""
         try:
-            payload = to_json_safe(provider())
-            raw_projects = payload.get("projects", []) if isinstance(payload, dict) else []
-            projects = (
-                [project_view(project) for project in raw_projects]
-                if isinstance(raw_projects, list)
-                else []
-            )
+            if project_id is None:
+                body: dict[str, Any] | None = projects_body(self.server.project_provider)
+            else:
+                body = project_body(self.server.project_detail_provider, project_id)
         except Exception:  # noqa: BLE001 - provider failures are degraded, not fatal
             _logger.exception("Project provider returned unsanitizable data")
             self._respond_json(
@@ -591,7 +587,10 @@ class DashboardRequestHandler(BaseHTTPRequestHandler):
                 send_body,
             )
             return
-        self._respond_json(HTTPStatus.OK, {"projects": projects}, send_body)
+        if body is None:
+            self._respond_json(HTTPStatus.NOT_FOUND, {"error": "not found"}, send_body)
+            return
+        self._respond_json(HTTPStatus.OK, body, send_body)
 
     def _serve_run_detail(self, raw_run_id: str, send_body: bool) -> None:
         if not is_valid_run_id(raw_run_id):

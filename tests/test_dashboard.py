@@ -293,6 +293,11 @@ def fake_project_provider() -> dict[str, Any]:
     }
 
 
+def fake_project_detail_provider(project_id: str) -> dict[str, Any] | None:
+    projects = fake_project_provider()["projects"]
+    return next((p for p in projects if p["project_id"] == project_id), None)
+
+
 def fake_run_detail_provider(run_id: str) -> dict[str, Any] | None:
     return FIXTURE_DETAILS.get(run_id)
 
@@ -386,6 +391,7 @@ def running_server() -> Iterator[RunningServer]:
         run_detail_provider=fake_run_detail_provider,
         health_provider=fake_health_provider,
         project_provider=fake_project_provider,
+        project_detail_provider=fake_project_detail_provider,
     )
     running = _start(config)
     try:
@@ -770,6 +776,7 @@ _GET_ROUTES = (
     "/api/runs/run-001",
     "/api/compare?a=run-001&b=run-002",
     "/api/projects",
+    "/api/projects/project-001",
     "/nope",
 )
 #: The page link is the one place a query token is valid, so the page has no query-token case.
@@ -1210,22 +1217,89 @@ def test_runs_pagination_defaults(running_server: RunningServer) -> None:
     assert len(payload["runs"]) == len(FIXTURE_RUNS)
 
 
-def test_projects_show_project_and_task_progress(running_server: RunningServer) -> None:
+def test_projects_list_rollups_without_the_models_table(running_server: RunningServer) -> None:
     response = running_server.request(
         "GET", "/api/projects", headers=running_server.authed_headers()
     )
     assert response.status == 200
     payload = _body_json(response)
     project = payload["projects"][0]
-    assert set(project) <= PROJECT_FIELDS | {"tasks", "models", "totals"}
+    rollup = {"tasks", "totals", "active_calls", "last_activity_at"}
+    assert set(project) <= PROJECT_FIELDS | rollup
     assert project["project_id"] == "project-001"
     assert project["state"] == "RUNNING"
     assert set(project["tasks"][0]) <= PROJECT_TASK_FIELDS
     assert project["tasks"][0]["pull_request_url"].endswith("/pull/1")
+    assert project["totals"]["calls"] == 1
+    assert project["totals"]["costs"]["usage_value_usd"]["total"] == pytest.approx(0.384832)
+    assert project["active_calls"] == 0
+    assert project["last_activity_at"] == "2024-01-01T01:00:00+00:00"
+
+
+def test_one_project_lists_its_models(running_server: RunningServer) -> None:
+    response = running_server.request(
+        "GET", "/api/projects/project-001", headers=running_server.authed_headers()
+    )
+    assert response.status == 200
+    project = _body_json(response)
+    assert project["project_id"] == "project-001"
     assert set(project["models"][0]) <= PROJECT_MODEL_FIELDS
     assert project["models"][0]["model"] == "fake-model"
     assert project["models"][0]["usage"]["input_tokens"] == 100
     assert project["models"][0]["usage"]["usage_value_usd"] == pytest.approx(0.384832)
+
+
+@pytest.mark.parametrize("project_id", ["project-missing", "..", "bad%20id", "a" * 81])
+def test_an_unknown_or_hostile_project_id_is_not_found(
+    running_server: RunningServer, project_id: str
+) -> None:
+    response = running_server.request(
+        "GET", f"/api/projects/{project_id}", headers=running_server.authed_headers()
+    )
+    assert response.status == 404
+
+
+def test_one_project_is_not_found_without_a_detail_provider() -> None:
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=fake_run_detail_provider,
+        project_provider=fake_project_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request(
+            "GET", "/api/projects/project-001", headers=running.authed_headers()
+        )
+        assert response.status == 404
+    finally:
+        _stop(running)
+
+
+def test_the_projects_list_stays_small_however_many_calls_a_project_made() -> None:
+    project = fake_project_provider()["projects"][0]
+    calls = [{**project["models"][0], "invocation_number": n} for n in range(1, 501)]
+
+    def busy_project_provider() -> dict[str, Any]:
+        return {"projects": [{**project, "models": calls}]}
+
+    config = DashboardConfig(
+        host="127.0.0.1",
+        port=0,
+        snapshot_provider=fake_snapshot_provider,
+        run_detail_provider=fake_run_detail_provider,
+        project_provider=busy_project_provider,
+    )
+    running = _start(config)
+    try:
+        response = running.request("GET", "/api/projects", headers=running.authed_headers())
+        assert response.status == 200
+        body = response.read_body  # type: ignore[attr-defined]
+        assert len(body) < 4_000
+        assert json.loads(body)["projects"][0]["totals"]["calls"] == 500
+    finally:
+        _stop(running)
 
 
 def test_projects_are_empty_when_provider_is_not_configured() -> None:
@@ -2381,10 +2455,10 @@ def test_dashboard_unreported_cost_and_tokens_show_not_reported_and_never_swap_u
     # the list-price estimate in adjacent cells, matching their header order; the
     # estimate is read from its own field, never from usage_value_usd.
     assert (
-        "appendCell(row, moneyText(usage.usage_value_usd)); "
-        "appendCell(row, displayNumber(usage.total_premium_request_cost)); "
-        "appendCell(row, moneyText(usage.list_price_estimate_usd));"
-    ) in function_source(js, "modelRow")
+        "moneyText(usage.usage_value_usd), "
+        "displayNumber(usage.total_premium_request_cost), "
+        "moneyText(usage.list_price_estimate_usd) ]"
+    ) in function_source(js, "modelSpec")
     code = normalized(js)
     assert "moneyText(usage.usage_value_usd)" in code
     assert "moneyText(usage.list_price_estimate_usd)" in code
@@ -4145,6 +4219,7 @@ def token_server() -> Iterator[RunningServer]:
             snapshot_provider=_token_snapshot_provider,
             run_detail_provider=_token_run_detail,
             project_provider=_token_project_provider,
+            project_detail_provider=lambda _id: _token_project_provider()["projects"][0],
             health_provider=_token_health_provider,
         )
     )
@@ -4196,6 +4271,8 @@ def test_a_secret_in_a_project_task_title_or_model_is_redacted(token_server: Run
     assert _TITLE_TOKEN not in raw
     (project,) = payload["projects"]
     assert project["tasks"][0]["title"] == _REDACTED_TITLE
+    raw, project = _get_json(token_server, "/api/projects/project-001")
+    assert _TITLE_TOKEN not in raw
     assert project["models"][0]["model"] == _REDACTED_MODEL
 
 

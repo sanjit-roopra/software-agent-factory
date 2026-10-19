@@ -117,6 +117,15 @@ class ProjectProvider(Protocol):
     def __call__(self) -> Any: ...
 
 
+class ProjectDetailProvider(Protocol):
+    """Optional provider of one project with its calls, or ``None`` for an unknown id.
+
+    Called with a project id the dashboard already validated.
+    """
+
+    def __call__(self, project_id: str) -> Any | None: ...
+
+
 class ResumeRequestReader(Protocol):
     """Optional provider of the dashboard resume requests of one episode.
 

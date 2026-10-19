@@ -20,6 +20,7 @@ from .handler import DashboardRequestHandler
 from .security import expected_origin, generate_token, validate_bind_host
 from .snapshot import (
     HealthProvider,
+    ProjectDetailProvider,
     ProjectProvider,
     ResumeRequestReader,
     RunDetailProvider,
@@ -52,7 +53,8 @@ class DashboardConfig:
     ``run_diff_provider`` the diff route, ``run_transcript_provider`` the call transcript
     route (ADR-047, ADR-050), ``run_prompt_provider`` the call prompt route (ADR-070) and
     ``run_versions_provider`` the change stream ``/api/events`` (ADR-077); without them they are
-    ``404``. ``resume_actions`` turns on
+    ``404``. ``project_detail_provider`` turns on ``/api/projects/<id>`` (ADR-078).
+    ``resume_actions`` turns on
     the approve, answer and retry routes; without it every ``POST`` is ``405``.
     ``request_timeout_seconds`` is how long a connection may stay silent: a client that
     declares a body and sends none gets ``408`` after it. Pass fakes in
@@ -64,6 +66,7 @@ class DashboardConfig:
     run_detail_provider: RunDetailProvider
     health_provider: HealthProvider | None = None
     project_provider: ProjectProvider | None = None
+    project_detail_provider: ProjectDetailProvider | None = None
     run_evidence_provider: RunDetailProvider | None = None
     run_diff_provider: RunDiffProvider | None = None
     run_transcript_provider: RunTranscriptProvider | None = None
@@ -93,6 +96,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.run_detail_provider: RunDetailProvider = config.run_detail_provider
         self.health_provider: HealthProvider | None = config.health_provider
         self.project_provider: ProjectProvider | None = config.project_provider
+        self.project_detail_provider: ProjectDetailProvider | None = config.project_detail_provider
         self.run_evidence_provider: RunDetailProvider | None = config.run_evidence_provider
         self.run_diff_provider: RunDiffProvider | None = config.run_diff_provider
         self.run_transcript_provider: RunTranscriptProvider | None = config.run_transcript_provider

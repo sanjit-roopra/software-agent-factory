@@ -33,6 +33,7 @@ from typer.testing import CliRunner
 from software_agent_factory import cli
 from software_agent_factory.cli import app
 from software_agent_factory.config import DEFAULT_CONFIG_FILENAME
+from software_agent_factory.dashboard.projects_route import project_rollup
 from software_agent_factory.dashboard.view import project_view
 from software_agent_factory.doctor import CheckResult, CheckStatus, DoctorReport
 from software_agent_factory.models import (
@@ -824,6 +825,99 @@ def test_dashboard_project_totals_count_usage_a_task_run_call_reported_only_per_
     payload = fake_dashboard[0].config.project_provider()
     project = project_view(payload["projects"][0])
     assert project["totals"]["tokens"]["input_tokens"] == {"total": 40, "reported_count": 1}
+
+
+def _save_task_run(data_dir: Path, run_id: str, success: bool, input_tokens: int) -> None:
+    now = datetime(2026, 10, 1, tzinfo=UTC)
+    usage = UsageMetrics(model_usage=(ModelUsage(model="gpt-6.1-sol", input_tokens=input_tokens),))
+    FileRunStore(data_dir).save_run(
+        FactoryRun(
+            id=run_id,
+            work_item_id=f"WI-{run_id}",
+            state=WorkflowState.PR_CREATED,
+            created_at=now,
+            updated_at=now,
+            invocation_records=[
+                InvocationRecord(
+                    invocation_number=1,
+                    role=AgentRole.IMPLEMENTER,
+                    model="gpt-6.1-sol",
+                    reasoning="high",
+                    started_at=now,
+                    completed_at=now,
+                    success=success,
+                    failure_reason=None if success else "tests failed",
+                    usage=usage,
+                )
+            ],
+        )
+    )
+
+
+def test_dashboard_project_rollup_counts_task_runs_read_once_from_the_scan_cache(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _save_task_run(data_dir, "run-a", success=True, input_tokens=40)
+    _save_task_run(data_dir, "run-b", success=False, input_tokens=7)
+    FileProjectStore(data_dir).save_execution(
+        ProjectExecution(
+            project_id="project-rollup",
+            state=ProjectState.RUNNING,
+            tasks=(
+                ProjectTaskExecution(task_id=1, work_item_id="WI-run-a", run_id="run-a"),
+                ProjectTaskExecution(task_id=2, work_item_id="WI-run-b", run_id="run-b"),
+            ),
+        )
+    )
+    assert runner.invoke(app, ["dashboard", "--data-dir", str(data_dir)]).exit_code == 0
+    config = fake_dashboard[0].config
+    loads: list[str] = []
+    load_run = FileRunStore.load_run
+
+    def counted_load(store: FileRunStore, run_id: str) -> FactoryRun:
+        loads.append(run_id)
+        return load_run(store, run_id)
+
+    monkeypatch.setattr(FileRunStore, "load_run", counted_load)
+
+    (raw,) = config.project_provider()["projects"]
+    config.project_provider()
+    rollup = project_rollup(raw)
+
+    assert sorted(loads) == ["run-a", "run-b"]
+    assert "models" not in rollup
+    assert rollup["totals"]["calls"] == 2
+    assert rollup["totals"]["failed_calls"] == {"total": 1, "reported_count": 2}
+    assert rollup["totals"]["tokens"]["input_tokens"] == {"total": 47, "reported_count": 2}
+    assert rollup["totals"] == project_view(raw)["totals"]
+    assert rollup["active_calls"] == 0
+    detail = config.project_detail_provider("project-rollup")
+    assert [call["scope"] for call in detail["models"]] == ["task 1", "task 2"]
+    assert config.project_detail_provider("project-missing") is None
+    assert config.project_detail_provider("../etc") is None
+
+
+def test_dashboard_project_reads_a_task_run_the_scan_does_not_hold_from_the_store(
+    data_dir: Path, fake_dashboard: list[FakeDashboardServer]
+) -> None:
+    _save_task_run(data_dir, "run-old", success=True, input_tokens=3)
+    _save_task_run(data_dir, "run-new", success=True, input_tokens=5)
+    FileProjectStore(data_dir).save_execution(
+        ProjectExecution(
+            project_id="project-old",
+            state=ProjectState.RUNNING,
+            tasks=(
+                ProjectTaskExecution(task_id=1, work_item_id="WI-run-old", run_id="run-old"),
+                ProjectTaskExecution(task_id=2, work_item_id="WI-gone", run_id="run-gone"),
+            ),
+        )
+    )
+    args = ["dashboard", "--data-dir", str(data_dir), "--max-scanned-runs", "1"]
+    assert runner.invoke(app, args).exit_code == 0
+
+    (raw,) = fake_dashboard[0].config.project_provider()["projects"]
+
+    assert [call["scope"] for call in raw["models"]] == ["task 1"]
 
 
 def test_dashboard_detail_provider_returns_none_for_unknown_or_hostile_ids(

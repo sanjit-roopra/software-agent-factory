@@ -50,6 +50,7 @@ from .security import (
 from .server import DashboardConfig, DashboardServer, create_server
 from .snapshot import (
     HealthProvider,
+    ProjectDetailProvider,
     ProjectProvider,
     ResumeRequester,
     ResumeRequestReader,
@@ -73,6 +74,7 @@ __all__ = [
     "PROJECT_FIELDS",
     "PROJECT_MODEL_FIELDS",
     "PROJECT_TASK_FIELDS",
+    "ProjectDetailProvider",
     "ProjectProvider",
     "RUN_DETAIL_FIELDS",
     "RUN_SUMMARY_FIELDS",
