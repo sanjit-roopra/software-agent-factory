@@ -176,3 +176,22 @@ def test_the_stepper_counts_entries_and_time_per_stage() -> None:
     assert [step["status"] for step in stopped][4] == "halted"
     assert stopped[4]["time"] == "2 min 0 s"
     assert old == []
+
+
+def test_the_stepper_skips_time_before_the_oldest_kept_move() -> None:
+    trimmed = {
+        "created_at": "2026-10-19T09:00:00Z",
+        "state": "DONE",
+        "is_finished": True,
+        "transitions": [
+            _move("IMPLEMENTING", "VERIFYING", 30),
+            _move("VERIFYING", "PR_READY", 31),
+            _move("PR_READY", "DONE", 32),
+        ],
+    }
+
+    (result,) = run_functions(_JS, [JsCall("stageSteps", (trimmed, 0))])
+
+    assert result.value[2]["time"] == ""
+    assert result.value[3]["time"] == "1 min 0 s"
+    assert result.value[5]["time"] == "1 min 0 s"

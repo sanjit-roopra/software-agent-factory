@@ -3644,7 +3644,9 @@
     const steps = STAGES.map(function ([label]) {
       return { label: label, entries: 0, ms: 0, status: "todo" };
     });
-    let since = Date.parse(detail.created_at);
+    // When the oldest moves were dropped (or the run began before moves were kept),
+    // the time before the first kept move is unknown, so it is not counted.
+    let since = moves[0].from_state === "CREATED" ? Date.parse(detail.created_at) : NaN;
     for (const move of moves) {
       const at = Date.parse(move.at);
       const from = stageIndex(move.from_state);
