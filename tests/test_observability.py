@@ -3334,3 +3334,24 @@ def test_a_run_summary_drops_the_resume_classification_the_page_would_refuse(
     )
 
     assert snapshot.runs[0].resume_classification is None
+
+
+def test_snapshot_lists_the_calls_in_progress_with_their_run_titles(tmp_path: Path) -> None:
+    store = _fake_store(tmp_path)
+    call = ActiveInvocation(
+        invocation_number=2,
+        role=AgentRole.TESTER,
+        model="claude-sonnet-5",
+        reasoning="high",
+        started_at=T0,
+        budget=AttemptBudget.IMPLEMENTATION,
+    )
+    store.add_run(_run("run-busy", state=WorkflowState.IMPLEMENTING, active_invocation=call))
+    store.add_run(_run("run-idle", state=WorkflowState.PLANNING))
+    store.add_artifact("run-busy", WorkItem(id="WI-busy", title="Busy task", description="D"))
+
+    snapshot = build_monitoring_snapshot(store, now=T0 + timedelta(minutes=1), limit=1)
+
+    assert [(c.run_id, c.title, c.role, c.started_at) for c in snapshot.active_calls] == [
+        ("run-busy", "Busy task", AgentRole.TESTER, T0)
+    ]

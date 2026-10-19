@@ -1103,6 +1103,46 @@
     }
     renderSparkline(document.getElementById("figure-week-trend"), overview.week_cost_by_day);
     renderRunsCount(overview.needs_you);
+    renderNowRunning(summary?.now_running);
+  }
+
+  // One call in progress: a link to its run, the run title, the role and model, and the
+  // start time the timer counts up from. A call without a run id has nowhere to link.
+  function nowRunningSpec(call) {
+    const runId = runIdOf(call);
+    if (typeof runId !== "string") {
+      return null;
+    }
+    return {
+      href: "#run/" + encodeURIComponent(runId),
+      title: displayValue(call.title, runId),
+      detail: roleText(call.role) + " \u00b7 " + displayValue(call.model),
+      since: call.started_at
+    };
+  }
+
+  // The strip above the run list: every call in progress, across every project.
+  function renderNowRunning(calls) {
+    const specs = asArray(calls).filter(isPlainObject).map(nowRunningSpec).filter(Boolean);
+    const list = document.getElementById("now-running-list");
+    document.getElementById("now-running").hidden = specs.length === 0;
+    trimChildren(list, specs.length);
+    const nowMs = Date.now();
+    for (const [index, spec] of specs.entries()) {
+      const item = childAt(list, index, "li");
+      if (item.firstElementChild?.tagName !== "A") {
+        item.appendChild(element("a")).append(
+          element("span", "now-title"), element("span", "now-detail"), element("span", "now-elapsed")
+        );
+      }
+      const link = item.firstElementChild;
+      link.setAttribute("href", spec.href);
+      const [title, detail, elapsed] = link.children;
+      setText(title, spec.title);
+      setText(detail, spec.detail);
+      syncTick(elapsed, spec.since, "");
+      setText(elapsed, elapsedText(spec.since, nowMs));
+    }
   }
 
   // ---- Runs view ---------------------------------------------------------
@@ -5588,13 +5628,6 @@
       const next = otherTheme(currentTheme());
       applyTheme(next);
       storeTheme(next);
-    });
-    document.getElementById("runs-body").addEventListener("click", function (event) {
-      const row = event.target.closest("tr[data-run-id]");
-      // A link in the row goes where it points, not to the run.
-      if (row && !event.target.closest("a")) {
-        navigateToRun(row.dataset.runId);
-      }
     });
     bindStopControl();
     bindSteerControl();

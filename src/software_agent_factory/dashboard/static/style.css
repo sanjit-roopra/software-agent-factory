@@ -150,7 +150,11 @@ thead th {
   letter-spacing: 0.04em;
   text-transform: uppercase;
 }
-tr[data-run-id] { cursor: pointer; }
+/* The title link stretches over its row, so a click anywhere opens the run and a
+   modified or middle click opens it in a new tab. The row's other links sit above it. */
+#runs-body tr[data-run-id] { position: relative; }
+#runs-body tr[data-run-id] > td:first-child > a::after { content: ""; position: absolute; inset: 0; }
+#runs-body tr[data-run-id] > td:not(:first-child) a, #runs-body .chips { position: relative; z-index: 1; }
 /* A stripe on the left of each run row: its outcome at a glance. */
 tr.row-needs_you > td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
 tr.row-failed > td:first-child { box-shadow: inset 3px 0 0 var(--error); }
@@ -164,7 +168,24 @@ tr.group-row > td {
   text-transform: uppercase;
   letter-spacing: 0.04em;
 }
-tr[data-run-id]:hover { background: var(--surface-2); }
+tr[data-run-id]:hover, tr[data-run-id]:focus-within { background: var(--surface-2); }
+.now-running { display: flex; flex-direction: column; gap: 0.25rem; margin: 0; padding: 0; list-style: none; }
+/* On a narrow screen the role, model and time wrap under the title. */
+.now-running a {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0 0.75rem;
+  align-items: baseline;
+  padding: 0.35rem 0.6rem;
+  border-left: 3px solid var(--accent);
+  border-radius: 6px;
+  color: var(--text);
+  text-decoration: none;
+}
+.now-running a:hover, .now-running a:focus-visible { background: var(--surface-2); }
+.now-title { flex: 1 1 12rem; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.now-detail { color: var(--text-muted); font-size: var(--fs-sm); overflow-wrap: anywhere; }
+.now-elapsed { font-variant-numeric: tabular-nums; }
 .project-card {
   border: 1px solid var(--border);
   border-radius: 12px;

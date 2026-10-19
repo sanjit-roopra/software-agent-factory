@@ -447,6 +447,11 @@ premium requests. The page shows each cost only when a call reported it. The pag
 never adds the two costs together. A note shows the failed runs and the tokens of the
 last 24 hours when they differ from the totals.
 
+When agents are at work, a "Now running" list sits between the overview and the run
+list. It covers every project. Each line shows the run title and the role and model of the
+call in progress. It also shows the time since the call started, which counts up.
+A line opens its run.
+
 The run list shows these columns for each run: title, state badge, the reason it
 stopped, pull request, calls, duration, cost and start time. The tooltip of the title
 names the run id and the models. Tags after the title show a route other than `FULL`,
@@ -457,7 +462,9 @@ stopped run shows its reason. A run with no new signal for too long gets its own
 it merged. Duration is the time from the start to the end of the run, and it counts up
 every second while the run works. The time spent in agent calls is its tooltip.
 The table fits the page width, and a long title or reason ends with an ellipsis. On a
-screen narrower than 1360 pixels the calls column is left out.
+screen narrower than 1360 pixels the calls column is left out. The title is a link that
+covers its row, so a click anywhere on the row opens the run. A middle click, or a click
+with Ctrl or Cmd, opens the run in a new tab.
 
 The run page starts with a summary and the steps of the run. Under the outcome line it
 shows the same tags, the route also for `FULL`, and the pull request link. A run that

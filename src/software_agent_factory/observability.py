@@ -106,6 +106,7 @@ from .models import (
     unresolved_decisions_summary,
     utc_now,
 )
+from .now_running import ActiveCallBrief, active_call_briefs
 from .redaction import redact_secrets
 from .resume import current_context_fingerprint, escalation_route, resume_refusal_within
 from .run_metrics import (
@@ -172,9 +173,7 @@ KEY_FIGURE_WINDOW = timedelta(hours=24)
 DEFAULT_MAX_SCANNED_RUNS = 1000
 
 
-# ---------------------------------------------------------------------------
 # Store surface
-# ---------------------------------------------------------------------------
 
 
 class RunStoreProtocol(Protocol):
@@ -204,9 +203,7 @@ class RunStoreProtocol(Protocol):
     ) -> Any: ...
 
 
-# ---------------------------------------------------------------------------
 # Snapshot models
-# ---------------------------------------------------------------------------
 
 
 class PageMeta(ModelBase):
@@ -522,7 +519,8 @@ class MonitoringSnapshot(VersionedModel):
     completed after the cutoff and none reported a counted token class, and ``0`` when
     no call did (unknown is never zero). All three cover only the scanned subset.
     ``daily_usage`` sums the usage of the calls that completed on each of the last
-    ``COST_TREND_DAYS`` 24-hour periods before ``generated_at``, oldest first.
+    ``COST_TREND_DAYS`` 24-hour periods before ``generated_at``, oldest first. ``active_calls``
+    lists the calls in progress over the scanned runs (:mod:`.now_running`).
     """
 
     generated_at: UtcDateTime
@@ -544,11 +542,10 @@ class MonitoringSnapshot(VersionedModel):
     metrics: AggregateMetrics
     page: PageMeta
     runs: list[RunSummary] = Field(default_factory=list)
+    active_calls: list[ActiveCallBrief] = Field(default_factory=list)
 
 
-# ---------------------------------------------------------------------------
 # Snapshot construction
-# ---------------------------------------------------------------------------
 
 
 def build_monitoring_snapshot(
@@ -656,6 +653,7 @@ def build_monitoring_snapshot(
             has_more=(offset + len(summaries)) < total_readable,
         ),
         runs=summaries,
+        active_calls=active_call_briefs(scan.readable_runs, lambda i: _title_of(store, i, scan)),
     )
 
 

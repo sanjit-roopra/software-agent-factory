@@ -130,6 +130,10 @@ def render_index_html(*, token: str) -> str:
         </ul>
         <p id="overview-note" class="stat-note" hidden></p>
       </div>
+      <div id="now-running" class="card" hidden>
+        <h2 id="now-running-heading">Now running</h2>
+        <ul id="now-running-list" class="now-running" aria-labelledby="now-running-heading"></ul>
+      </div>
       <div class="card">
         <h2 id="run-list-heading">Run list</h2>
         <p id="runs-filter" hidden>
