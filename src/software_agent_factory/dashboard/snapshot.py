@@ -35,7 +35,7 @@ from collections.abc import Iterable
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
-from ..models import PROJECT_ID_PATTERN, RUN_LIST_STATES, RunListFilter
+from ..models import PROJECT_ID_PATTERN, RUN_LIST_SORTS, RUN_LIST_STATES, RunListFilter
 
 if TYPE_CHECKING:
     from ..models import DashboardResumeRequest, FactoryRun
@@ -257,9 +257,6 @@ def clamp_pagination(raw_limit: str | None, raw_offset: str | None) -> tuple[int
 #: The longest search text ``/api/runs`` takes in ``q``.
 MAX_SEARCH_LENGTH = 100
 
-#: The ``sort`` values of ``/api/runs``: whether the oldest runs come first.
-_SORT_OLDEST_FIRST: dict[str, bool] = {"newest": False, "oldest": True}
-
 _PROJECT_ID = re.compile(PROJECT_ID_PATTERN)
 
 
@@ -285,6 +282,6 @@ def parse_run_filter(query: dict[str, list[str]]) -> RunListFilter | None:
         return None
     if project is not None and not _PROJECT_ID.fullmatch(project):
         return None
-    if sort not in _SORT_OLDEST_FIRST:
+    if sort not in RUN_LIST_SORTS:
         return None
-    return RunListFilter(text, state, project, _SORT_OLDEST_FIRST[sort])
+    return RunListFilter(text, state, project, sort)

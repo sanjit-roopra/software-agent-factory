@@ -1,5 +1,38 @@
 # Architecture Decisions
 
+## ADR-065: Sort the run list by any main column, and let n and f leave the page
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The run list sorted only by start time. An operator who wanted the longest or the most
+costly runs had to page through every run. The `n` and `f` keys moved only within the
+loaded page. They stopped at the last matching row even when later pages had more.
+
+### Decision
+
+`GET /api/runs` takes `sort` values `title`, `state`, `duration` and `cost`, and each of
+them after `-` for high to low, as well as `newest` and `oldest`. The server sorts before
+it pages, so the order holds across pages. Runs with the same value stay newest first,
+and a run with no title or cost goes last in both directions. Cost is the same USD figure
+the list shows: the usage value when reported, else the list-price estimate. State sorts
+by the word on the badge (active, done, failed, needs you), then by the stage name.
+
+The Title, State, Duration, Cost and Started headings are buttons. A first click sorts
+numbers high to low and text from A, and a second click turns the order round. The
+heading carries `aria-sort`, and the sort stays in the address.
+
+When `n` or `f` finds no matching run below the chosen one, it opens the list of only
+those runs: the needs-you filter, or the `failed` state. On that list it opens the next
+page. Either way it picks the first run.
+
+### Consequences
+
+A sort by title reads each listed run's work item once. The scan already keeps these in
+memory for search. The needs-you group stays on top of an unfiltered page, and each group
+keeps the chosen order. No new write action is added.
+
 ## ADR-064: A stuck filter, filter tiles and one cost per step
 
 Status: accepted on 2026-10-19.
