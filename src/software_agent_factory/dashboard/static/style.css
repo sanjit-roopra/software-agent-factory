@@ -298,6 +298,7 @@ a { color: var(--accent); }
 .role-icon { width: 1em; height: 1em; margin-right: 0.35rem; vertical-align: -0.15em; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 /* The reduced view: one line per call with its role, outcome and duration bar. */
 .timeline-reduced { min-width: 0; }
+.timeline-reduced td { overflow-wrap: break-word; }
 .timeline-reduced :is(th, .call-row > td):is(:nth-child(3), :nth-child(6), :nth-child(7)),
 .timeline-reduced tfoot,
 .timeline-reduced .call-row > td:nth-child(2) .step-extra,

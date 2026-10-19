@@ -4220,15 +4220,16 @@
     if (keep && kind in state.evidence) {
       state.evidence[kind] = payload;
       renderCompletion();
-      if (state.runDetail) {
-        renderTimeline(state.runDetail, runId);
-      }
     }
     const key = runId + "\n" + JSON.stringify(payload);
     if (state.evidenceDrawn[kind] === key) {
       return;
     }
     state.evidenceDrawn[kind] = key;
+    // The Steps list joins the checks and review answers, so it changes with them.
+    if (keep && state.runDetail) {
+      renderTimeline(state.runDetail, runId);
+    }
     const body = document.getElementById(kind + "-body");
     clearChildren(body);
     const shown = payload !== null && EVIDENCE_RENDERERS[kind](body, payload);
