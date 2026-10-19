@@ -1678,13 +1678,20 @@
     syncRows(body.querySelector("tbody"), models.map(modelSpec));
   }
 
+  // The toggle and each poll may both ask; only the newest answer draws.
   function loadProjectCalls(card) {
+    const seq = String(Number(card.dataset.callsSeq || 0) + 1);
+    card.dataset.callsSeq = seq;
     return apiFetch("/api/projects/" + encodeURIComponent(card.dataset.projectId)).then(
       function (project) {
-        renderProjectCalls(card, project);
+        if (card.dataset.callsSeq === seq) {
+          renderProjectCalls(card, project);
+        }
       },
       function () {
-        setText(card.querySelector(".project-calls > div"), "The calls could not load.");
+        if (card.dataset.callsSeq === seq) {
+          setText(card.querySelector(".project-calls > div"), "The calls could not load.");
+        }
       }
     );
   }

@@ -2473,6 +2473,8 @@ def test_the_projects_view_loads_a_projects_calls_only_while_its_section_is_open
     js = dashboard_assets.APP_JS
     load = function_source(js, "loadProjectCalls")
     assert 'apiFetch("/api/projects/" + encodeURIComponent(card.dataset.projectId))' in load
+    # An older answer that lands after a newer one never draws over it.
+    assert normalized(load).count("if (card.dataset.callsSeq === seq)") == 2
     assert "if (calls.open)" in function_source(js, "projectCard")
     assert "if (calls.open)" in function_source(js, "patchProjectCard")
 
