@@ -134,6 +134,12 @@ The stage the run is in has a blue bar, and the stage where it stopped has a
 red bar. Runs from before this change have no stages. Their Steps list still
 shows each call.
 
+An active run whose last three attempts repeat shows a red **possibly looping**
+chip on its row and on its status line. A run repeats when each attempt failed
+with a reason that starts the same way. It also repeats when the same check,
+for example review or CI, sent the work back each time. Point at the chip to see which repeat
+it found. The chip is only a hint. The run goes on until its own limits stop it.
+
 ### Approve, answer or retry a halted run
 
 A run that needs you shows a panel on its detail page. The panel says why the

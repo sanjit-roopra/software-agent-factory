@@ -57,6 +57,7 @@ from typing import Any, Iterable, Literal, Protocol
 
 from pydantic import Field, ValidationError, model_serializer
 
+from .attempt_summary import RECENT_ATTEMPTS, RunAttemptSummary, attempt_summaries
 from .escalation_protocol import (
     ANSWER_COMMAND_PATTERN,
     ReplyClosedCause,
@@ -73,7 +74,6 @@ from .models import (
     ActiveInvocationStatus,
     AgentRole,
     AttemptBudget,
-    AttemptTrigger,
     Complexity,
     ContextTier,
     EscalationRecord,
@@ -303,27 +303,8 @@ class RunSummary(ModelBase):
     operator_escalation: OperatorEscalation | None = None
     active_role: AgentRole | None = None
     resume_classification: ResumeClassification | None = None
-
-
-class RunAttemptSummary(ModelBase):
-    """One attempt, reduced to the fields the dashboard may render.
-
-    Deliberately excludes the attempt ``reasoning`` level. ``failure_reason``
-    is carried as the raw stored text: it is free text that could quote
-    repository content, so this model is not safe to show as is. The
-    dashboard sanitizer (``dashboard.sanitize``) redacts and bounds it before
-    it leaves the process.
-    """
-
-    attempt_number: int = Field(ge=1)
-    role: AgentRole
-    model: str
-    budget: AttemptBudget
-    triggered_by: AttemptTrigger
-    outcome: str
-    started_at: UtcDateTime
-    completed_at: UtcDateTime
-    failure_reason: str | None = None
+    #: The last attempts of an unfinished run, so the run list can flag a run that repeats.
+    recent_attempts: list[RunAttemptSummary] = Field(default_factory=list)
 
 
 class RunInvocationSummary(ModelBase):
@@ -1157,6 +1138,9 @@ def _build_run_summary(
             run.active_invocation.role if run.active_invocation and not finished else None
         ),
         resume_classification=_page_resume_classification(run, now, reply_policy),
+        recent_attempts=[]
+        if finished
+        else attempt_summaries(run.attempt_records[-RECENT_ATTEMPTS:]),
     )
 
 
@@ -1235,7 +1219,13 @@ def build_run_detail(
     verification = _load_optional_artifact(store, run.id, VerificationReport)
     return RunDetail(
         **summary.model_dump(
-            exclude={"calls", "failure_reason", "active_role", "resume_classification"}
+            exclude={
+                "calls",
+                "failure_reason",
+                "active_role",
+                "resume_classification",
+                "recent_attempts",
+            }
         ),
         commit_sha=run.commit_sha,
         verification=_verification_summary(verification),
@@ -1247,20 +1237,7 @@ def build_run_detail(
             if operator_escalation is not None and operator_escalation.status == "running"
             else escalation_route(run)
         ),
-        attempts=[
-            RunAttemptSummary(
-                attempt_number=attempt.attempt_number,
-                role=attempt.role,
-                model=attempt.model,
-                budget=attempt.budget,
-                triggered_by=attempt.triggered_by,
-                outcome=attempt.outcome,
-                started_at=attempt.started_at,
-                completed_at=attempt.completed_at,
-                failure_reason=attempt.failure_reason,
-            )
-            for attempt in run.attempt_records
-        ],
+        attempts=attempt_summaries(run.attempt_records),
         invocations=[
             RunInvocationSummary(
                 invocation_number=invocation.invocation_number,
