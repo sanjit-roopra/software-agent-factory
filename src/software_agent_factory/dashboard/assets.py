@@ -80,6 +80,7 @@ def render_index_html(*, token: str) -> str:
       </p>
       <button id="theme-toggle" type="button">Switch theme</button>
       <button id="keys-help-open" type="button" aria-keyshortcuts="?">Keyboard shortcuts</button>
+      <button id="notify-toggle" type="button" aria-pressed="false" hidden>Notify me</button>
     </header>
     <nav aria-label="Main">
       <a href="#runs" data-route="runs">Runs

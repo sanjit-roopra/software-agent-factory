@@ -154,6 +154,10 @@ a terminal. The "Needs you" row counts the waiting runs on the page. When more r
 wait than one page shows, it says so, for example "Needs you · 15 of 18". It then links to
 the list of all runs that need you. While a run needs you, the browser tab title starts with the count,
 for example `(2)`, and the tab icon shows a dot.
+To get a browser notification as well, choose **Notify me** in the sidebar. The
+browser asks for permission only then. The page tells you once about each run that
+starts to need you or that becomes stale. Click the notification to open that run.
+Choose **Notify me** again to stop.
 
 - For a risk approval, choose **Approve**. A dialog shows the decision
   requested, the actions the approval allows, the actions it does not, and the

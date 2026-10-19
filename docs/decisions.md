@@ -1,5 +1,33 @@
 # Architecture Decisions
 
+## ADR-079: Opt-in browser notifications for runs that need you
+
+Status: accepted on 2026-10-19.
+
+### Context
+
+The tab title and icon show when a run needs you. A person who
+works in another window does not see them. Copilot coding agent and Devin tell the
+person when a task waits for them.
+
+### Decision
+
+The sidebar has a **Notify me** toggle. It is off by default. The page asks the
+browser for notification permission only when a person chooses it. While it is on,
+the page reads `GET /api/runs?state=escalated` and `GET /api/runs?state=stuck`
+every 15 seconds, and at once on a `runs-changed` event. It shows one notification
+for each run id that it has not told about before, for each of the two kinds. It
+keeps the ids it told about, at most 200, in memory and in `localStorage`. With no
+stored ids, the runs that wait at the first check are only remembered, so turning
+the toggle on does not flood the screen. A click on a notification focuses the tab
+and opens `#run/<id>`. There is no service worker, so notifications come only while
+the tab is open.
+
+### Consequences
+
+No server change and no new write action. While the toggle is on, the page sends
+two more reads every 15 seconds.
+
 ## ADR-078: Send a short summary per project and load its calls on demand
 
 Status: accepted on 2026-10-19.
