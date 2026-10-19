@@ -17,6 +17,10 @@ pi prints no stream of its own on stdout, so its runtime keeps the RPC events in
 
 ``factory project`` stores its decomposition calls the same way, under
 ``projects/<id>/calls/<n>.jsonl``, through :func:`store_call_transcript`.
+
+With ``factory.store_prompts`` on, the workflow also writes the prompt of each run call to
+``calls/<n>.prompt.md`` (:func:`store_call_prompt`), redacted and cut to
+:data:`PROMPT_MAX_CHARS`. It is off by default: a prompt holds the most repository text.
 """
 
 from __future__ import annotations
@@ -28,10 +32,16 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from json import JSONDecodeError
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from .atomic_write import write_text_atomic
+from .prompts import build_prompt
 from .redaction import redact_secrets
+
+if TYPE_CHECKING:
+    from .agents import AgentRequest
+    from .config import FactorySettings
+    from .models import FactoryRun
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +52,9 @@ MAX_TOOL_CALLS = 40
 PREVIEW_CHARS = 120
 #: The longest one-line preview of a transcript event the dashboard shows (ADR-047).
 EVENT_PREVIEW_CHARS = 400
+#: The longest stored prompt (ADR-047, ADR-070). A cut keeps the start and the end.
+PROMPT_MAX_CHARS = 100_000
+PROMPT_CUT_MARKER = "\n\n[factory: the middle of this prompt was cut]\n\n"
 
 # Input keys that best say what a tool call did, in order of preference.
 _PREVIEW_KEYS = ("command", "file_path", "path", "pattern", "url", "query", "description")
@@ -125,6 +138,48 @@ def store_call_transcript(directory: Path, invocation_number: int, text: str | N
     except OSError:
         logger.warning("could not store the transcript of call %d", invocation_number)
         return None
+
+
+def prompt_name(invocation_number: int) -> str:
+    """The run-relative path of one call's stored prompt."""
+    return f"{CALLS_DIRNAME}/{invocation_number:04d}.prompt.md"
+
+
+def cap_prompt(text: str) -> str:
+    """``text`` redacted, with its middle cut when it is longer than :data:`PROMPT_MAX_CHARS`."""
+    redacted = redact_secrets(text)
+    if len(redacted) <= PROMPT_MAX_CHARS:
+        return redacted
+    half = PROMPT_MAX_CHARS // 2
+    return redacted[:half] + PROMPT_CUT_MARKER + redacted[-half:]
+
+
+def store_call_prompt(
+    settings: FactorySettings, run_dir: Path, run: FactoryRun, request: AgentRequest
+) -> str | None:
+    """Write the running call's prompt when ``factory.store_prompts`` is on; only log a failure."""
+    active = run.active_invocation
+    if not settings.store_prompts or active is None:
+        return None
+    name = prompt_name(active.invocation_number)
+    try:
+        write_text_atomic(run_dir / name, cap_prompt(build_prompt(request)), mode=0o600)
+    except OSError:
+        logger.warning("could not store the prompt of call %d", active.invocation_number)
+        return None
+    return name
+
+
+def call_prompt_reader(runs_dir: Path) -> Callable[[str, int], str | None]:
+    """Reads one call's stored prompt by run id and call number, for the dashboard."""
+
+    def read(run_id: str, number: int) -> str | None:
+        try:
+            return (runs_dir / run_id / prompt_name(number)).read_text("utf-8", errors="replace")
+        except OSError:
+            return None
+
+    return read
 
 
 # pi repeats everything so far in each streaming update; the matching ``*_end`` event keeps it once.

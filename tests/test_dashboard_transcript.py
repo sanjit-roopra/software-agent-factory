@@ -197,7 +197,8 @@ def test_the_page_lists_events_one_per_line() -> None:
         JsCall("transcriptText", (body,)),
         JsCall("transcriptText", ({**body, "truncated": True},)),
         JsCall("transcriptText", ({},)),
-        JsCall("transcriptPath", ("run 1", 3)),
+        JsCall("callFilePath", ("run 1", 3, "transcript")),
+        JsCall("callFilePath", ("run 1", 3, "prompt")),
     ]
 
     values = [result.value for result in run_functions(dashboard_assets.APP_JS, calls)]
@@ -207,4 +208,5 @@ def test_the_page_lists_events_one_per_line() -> None:
         "(earlier events left out)\nassistant  Bash ls\nsystem",
         "No events.",
         "/api/runs/run%201/calls/3/transcript",
+        "/api/runs/run%201/calls/3/prompt",
     ]

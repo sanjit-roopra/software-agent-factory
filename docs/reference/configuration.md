@@ -27,6 +27,7 @@ factory:
 | --- | --- | --- | --- |
 | `data_dir` | path | `~/.software-factory` | Where runs, workspaces, locks, logs and reusable repository guidance live. `~` is expanded. |
 | `agent_timeout_seconds` | int > 0 | `900` | Per-agent-invocation timeout. |
+| `store_prompts` | bool | `false` | Keep the prompt of each agent call of a run in `runs/<id>/calls/<n>.prompt.md`, redacted and cut to 100,000 characters. The dashboard shows it with the View prompt button on each step (ADR-070). A prompt holds the most repository text, so it is off by default. |
 | `retries.same_model_attempts` | int > 0 | `2` | Per-stage same-model attempt limit for implementation routing and supported typed-output correction. |
 | `retries.max_total_attempts` | int > 0 | `6` | Hard ceiling on implementation attempts per run. Must be at least `same_model_attempts`. |
 

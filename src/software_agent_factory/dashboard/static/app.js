@@ -2364,14 +2364,16 @@
     detail.hidden = true;
     const cell = detail.appendChild(element("td"));
     cell.colSpan = CALL_COLUMN_COUNT;
-    cell.append(element("dl", "call-fields"), reasonButton(), buildTranscript());
+    cell.append(element("dl", "call-fields"), reasonButton(), buildTranscript(),
+      callFileBox("prompt"));
     return row;
   }
 
-  // ---- Run detail: call transcript ----------------------------------------
+  // ---- Run detail: call transcript and prompt -----------------------------
 
-  function transcriptPath(runId, number) {
-    return runDetailPath(runId) + "/calls/" + encodeURIComponent(number) + "/transcript";
+  // kind is "transcript" or "prompt" (ADR-070).
+  function callFilePath(runId, number, kind) {
+    return runDetailPath(runId) + "/calls/" + encodeURIComponent(number) + "/" + kind;
   }
 
   function transcriptLine(event) {
@@ -2387,60 +2389,80 @@
     return lines.length === 0 ? "No events." : lines.join("\n");
   }
 
-  function buildTranscript() {
+  function callFileBox(kind) {
     const box = element("div", "call-transcript");
-    const button = box.appendChild(element("button", "", "View transcript"));
+    box.dataset.kind = kind;
+    const button = box.appendChild(element("button", "", "View " + kind));
     button.type = "button";
     button.setAttribute("aria-expanded", "false");
-    box.appendChild(element("pre", "transcript-events")).hidden = true;
-    const raw = box.appendChild(element("details", "transcript-raw"));
-    raw.append(element("summary", "", "Raw text (end)"), element("pre", "transcript-tail"));
-    raw.hidden = true;
+    box.appendChild(element("pre", kind + "-events")).hidden = true;
     button.addEventListener("click", function () {
-      toggleTranscript(box);
+      toggleCallFile(box);
     });
     return box;
   }
 
-  // A different call in the slot starts closed and loads its own transcript.
-  function resetTranscript(box, runId, number) {
+  function buildTranscript() {
+    const box = callFileBox("transcript");
+    const raw = box.appendChild(element("details", "transcript-raw"));
+    raw.append(element("summary", "", "Raw text (end)"), element("pre", "transcript-tail"));
+    raw.hidden = true;
+    return box;
+  }
+
+  // A different call in the slot starts closed and loads its own transcript or prompt.
+  function resetCallFile(box, runId, number) {
     box.hidden = typeof number !== "number";
     box.dataset.key = runId + "/" + number;
     box.dataset.loaded = "";
-    showTranscript(box, false);
+    setCallFileOpen(box, false);
   }
 
-  function showTranscript(box, open) {
+  function setCallFileOpen(box, open) {
     const [button, events, raw] = box.children;
     button.setAttribute("aria-expanded", String(open));
-    setText(button, open ? "Hide transcript" : "View transcript");
+    setText(button, (open ? "Hide " : "View ") + box.dataset.kind);
     events.hidden = !open;
-    raw.hidden = !open || box.dataset.loaded !== "yes";
+    if (raw) {
+      raw.hidden = !open || box.dataset.loaded !== "yes";
+    }
   }
 
-  // The transcript loads once, when a person opens it. It is not polled.
-  function toggleTranscript(box) {
-    const [button, events, raw] = box.children;
+  function showCallFile(box, body) {
+    const [, events, raw] = box.children;
+    if (box.dataset.kind === "prompt") {
+      setText(events, typeof body.text === "string" ? body.text : "");
+      return;
+    }
+    setText(events, transcriptText(body));
+    setText(raw.lastElementChild, typeof body.tail === "string" ? body.tail : "");
+  }
+
+  // The file loads once, when a person opens it. It is not polled.
+  function toggleCallFile(box) {
+    const [button, events] = box.children;
+    const kind = box.dataset.kind;
     const open = button.getAttribute("aria-expanded") !== "true";
-    showTranscript(box, open);
+    setCallFileOpen(box, open);
     if (!open || box.dataset.loaded === "yes") {
       return;
     }
     const key = box.dataset.key;
     const slash = key.lastIndexOf("/");
-    setText(events, "Loading the transcript...");
+    setText(events, "Loading the " + kind + "...");
     button.disabled = true;
-    apiFetch(transcriptPath(key.slice(0, slash), key.slice(slash + 1)))
+    apiFetch(callFilePath(key.slice(0, slash), key.slice(slash + 1), kind))
       .then(function (body) {
         if (box.dataset.key === key) {
           box.dataset.loaded = "yes";
-          setText(events, transcriptText(body));
-          setText(raw.lastElementChild, typeof body.tail === "string" ? body.tail : "");
-          showTranscript(box, button.getAttribute("aria-expanded") === "true");
+          showCallFile(box, body);
+          setCallFileOpen(box, button.getAttribute("aria-expanded") === "true");
         }
       }, function () {
         if (box.dataset.key === key) {
-          setText(events, "No transcript was kept for this call, or it could not load.");
+          setText(events, kind === "prompt"
+            ? "No prompt was kept for this call. Set factory.store_prompts to keep prompts."
+            : "No transcript was kept for this call, or it could not load.");
         }
       })
       .finally(function () {
@@ -2459,8 +2481,9 @@
     if (row.dataset.call !== key) {
       row.dataset.call = key;
       setCallOpen(row, false);
-      resetTranscript(row.nextElementSibling.firstElementChild.lastElementChild, runId,
-        call.invocation_number);
+      const prompt = row.nextElementSibling.firstElementChild.lastElementChild;
+      resetCallFile(prompt.previousElementSibling, runId, call.invocation_number);
+      resetCallFile(prompt, runId, call.invocation_number);
     }
     const index = attemptIndex(call, attempts);
     const evidence = state.evidence;

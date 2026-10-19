@@ -1,5 +1,41 @@
 # Architecture Decisions
 
+## ADR-070: Keep call prompts behind a flag and show them on the Steps view
+
+Status: accepted on 2026-10-19. This amends ADR-047.
+
+### Context
+
+The factory kept only the size of each prompt. When an agent did the wrong thing,
+the operator had no way to see what the factory asked it to do. ADR-047 already let
+prompts reach the dashboard behind a switch, but no code did it. ADR-047 named the
+switch `dashboard.show_prompts`. The prompt file must exist before the dashboard can
+show it, so the switch belongs to the part that writes it.
+
+### Decision
+
+A new setting, `factory.store_prompts`, is off by default. When it is on, the workflow
+writes the prompt of each agent call of a run to `runs/<id>/calls/<n>.prompt.md`
+just before the call starts. The text includes a steer note when the call has one.
+The factory runs `redact_secrets` over the text first. A prompt longer than 100,000
+characters keeps its first and last 50,000 characters, with a marker in between.
+The file is readable by the owner only. A failed write is only logged and never fails the run.
+
+The dashboard serves the file at `GET /api/runs/<id>/calls/<n>/prompt`. It redacts
+the text again and cuts it to the same size. The route is a 404 when no prompt was kept.
+Each step on the Steps view has a View prompt button next to View transcript. It
+loads the prompt once, when a person opens it.
+
+This replaces `dashboard.show_prompts` in the ADR-047 table with
+`factory.store_prompts`. The cap stays at about 100 KB.
+
+### Consequences
+
+With the setting on, the data directory holds the full text sent to each agent, so
+it holds more repository content. With it off, nothing changes. A pi call that
+continues a session sends only the changed parts, but the file keeps the whole
+prompt the factory built. No new write action is added.
+
 ## ADR-069: Show call timings on the Steps view, and stop sending unread run timings
 
 Status: accepted on 2026-10-19.
@@ -871,7 +907,7 @@ These kinds of text can now reach the browser:
 | Check output | The output of each verification and CI command | The last 80 lines and at most 8 KB per command |
 | Review text | Findings, suggested changes and dispositions of each review round | 2,000 characters per field |
 | Plan and change set | The allowlisted fields of the saved plan and change set | 2,000 characters per field, 200 items per list |
-| Prompts | The prompt of each agent call | 100 KB per prompt, and only when `dashboard.show_prompts` is on |
+| Prompts | The prompt of each agent call | 100 KB per prompt, and only when `factory.store_prompts` is on (ADR-070) |
 
 The same rules hold for all of them:
 

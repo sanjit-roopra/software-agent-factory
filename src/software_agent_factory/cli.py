@@ -1424,7 +1424,7 @@ def dashboard_command(
     from .run_requests import build_steer_requester, build_stop_requester
     from .run_scan_cache import RunScanCache
     from .store import FileRunStore
-    from .transcripts import call_transcript_reader
+    from .transcripts import call_prompt_reader, call_transcript_reader
 
     store = FileRunStore(factory_config.data_dir)
     stale_after = _stale_after(factory_config, None)
@@ -1567,6 +1567,7 @@ def dashboard_command(
                 run_evidence_provider=lambda run_id: build_run_evidence(store, run_id),
                 run_diff_provider=lambda run_id, attempt: build_run_diff(store, run_id, attempt),
                 run_transcript_provider=call_transcript_reader(store.runs_dir),
+                run_prompt_provider=call_prompt_reader(store.runs_dir),
                 resume_request_reader=build_resume_request_reader(store),
                 resume_actions=ResumeActions(
                     run_reader=build_resume_run_reader(store),

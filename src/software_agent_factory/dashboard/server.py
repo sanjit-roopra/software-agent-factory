@@ -47,8 +47,9 @@ class DashboardConfig:
     is optional -- a dashboard with no configured health source simply
     reports ``health: null`` rather than refusing to start.
     ``run_evidence_provider`` turns on the check output, review and plan routes
-    ``run_diff_provider`` the diff route and ``run_transcript_provider`` the call transcript
-    route (ADR-047, ADR-050); without them they are
+    ``run_diff_provider`` the diff route, ``run_transcript_provider`` the call transcript
+    route (ADR-047, ADR-050) and ``run_prompt_provider`` the call prompt route (ADR-070);
+    without them they are
     ``404``. ``resume_actions`` turns on
     the approve, answer and retry routes; without it every ``POST`` is ``405``.
     ``request_timeout_seconds`` is how long a connection may stay silent: a client that
@@ -64,6 +65,7 @@ class DashboardConfig:
     run_evidence_provider: RunDetailProvider | None = None
     run_diff_provider: RunDiffProvider | None = None
     run_transcript_provider: RunTranscriptProvider | None = None
+    run_prompt_provider: RunTranscriptProvider | None = None
     resume_request_reader: ResumeRequestReader | None = None
     resume_actions: ResumeActions | None = None
     host: str = DEFAULT_HOST
@@ -91,6 +93,7 @@ class DashboardServer(ThreadingHTTPServer):
         self.run_evidence_provider: RunDetailProvider | None = config.run_evidence_provider
         self.run_diff_provider: RunDiffProvider | None = config.run_diff_provider
         self.run_transcript_provider: RunTranscriptProvider | None = config.run_transcript_provider
+        self.run_prompt_provider: RunTranscriptProvider | None = config.run_prompt_provider
         self.resume_request_reader: ResumeRequestReader | None = config.resume_request_reader
         self.resume_actions: ResumeActions | None = config.resume_actions
         self.request_timeout_seconds: float = config.request_timeout_seconds

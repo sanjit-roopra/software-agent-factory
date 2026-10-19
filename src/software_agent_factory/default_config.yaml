@@ -3,6 +3,8 @@ factory:
   agent_timeout_seconds: 900
   # Set unattended to true so that no run stops for a person (ADR-039).
   unattended: false
+  # Set store_prompts to true to keep each agent call's prompt for the dashboard (ADR-070).
+  store_prompts: false
   retries:
     same_model_attempts: 2
     max_total_attempts: 6

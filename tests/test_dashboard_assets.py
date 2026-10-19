@@ -985,8 +985,9 @@ def test_an_expanded_call_stays_open_across_a_refresh() -> None:
     assert 'const key = runId + "/" + displayValue(call.invocation_number);' in patch
     assert (
         "if (row.dataset.call !== key) { row.dataset.call = key; setCallOpen(row, false); "
-        "resetTranscript(" in patch
+        "const prompt = " in patch
     )
+    assert "resetCallFile(prompt, runId, call.invocation_number);" in patch
     timeline = function_source(js, "renderTimeline")
     assert "callAt(body, index)" in timeline
     assert "trimChildren(body, calls.length * ROWS_PER_CALL)" in timeline

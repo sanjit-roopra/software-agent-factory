@@ -1,4 +1,4 @@
-"""The ``GET /api/runs/<id>/calls/<n>/transcript`` route (ADR-047, ADR-050).
+"""The ``GET /api/runs/<id>/calls/<n>/transcript`` and ``.../prompt`` routes (ADR-047, ADR-050).
 
 It serves one agent call's stored transcript: a one-line preview of each of the last
 :data:`MAX_EVENTS` events, and the last :data:`TAIL_CHARS` characters of the raw text.
@@ -6,6 +6,10 @@ The text goes through ``redact_secrets`` again before any cut, and only the last
 :data:`MAX_TRANSCRIPT_CHARS` characters are kept. ``truncated`` says that events were
 left out. The text comes from a :class:`~.snapshot.RunTranscriptProvider`, never from a
 store this package reads itself.
+
+The prompt route serves the prompt stored when ``factory.store_prompts`` is on (ADR-070):
+the text, redacted again and cut to :data:`~..transcripts.PROMPT_MAX_CHARS`. It is ``404``
+when no prompt was stored.
 """
 
 from __future__ import annotations
@@ -13,15 +17,15 @@ from __future__ import annotations
 import logging
 import re
 from http import HTTPStatus
-from typing import Any
+from typing import Any, Protocol
 
 from ..redaction import redact_secrets
-from ..transcripts import TRANSCRIPT_CUT_MARKER, event_preview
+from ..transcripts import PROMPT_CUT_MARKER, TRANSCRIPT_CUT_MARKER, cap_prompt, event_preview
 from .snapshot import RunTranscriptProvider, is_valid_run_id
 
 _logger = logging.getLogger("software_agent_factory.dashboard")
 
-_TRANSCRIPT_PATTERN = re.compile(r"^/api/runs/([^/]+)/calls/([^/]+)/transcript$")
+_CALL_FILE_PATTERN = re.compile(r"^/api/runs/([^/]+)/calls/([^/]+)/(transcript|prompt)$")
 #: A call number: 1 to 9999, no sign or leading zero, as in ``calls/<n>.jsonl``.
 _CALL_PATTERN = re.compile(r"^[1-9]\d{0,3}$", re.ASCII)
 MAX_TRANSCRIPT_CHARS = 1_000_000
@@ -36,25 +40,39 @@ def _log_failure_type(run_id: str, exc: BaseException) -> None:
     _logger.error("Transcript provider failed for run %s: %s", run_id, type(exc).__name__)
 
 
-def transcript_answer(
-    provider: RunTranscriptProvider | None, path: str
-) -> tuple[HTTPStatus, dict[str, Any]]:
-    """The status and JSON body for ``path``: ``404`` when it is not a transcript route."""
-    match = _TRANSCRIPT_PATTERN.match(path)
-    if provider is None or match is None:
+class CallFileProviders(Protocol):
+    """The server attributes that read a call's stored transcript and prompt."""
+
+    run_transcript_provider: RunTranscriptProvider | None
+    run_prompt_provider: RunTranscriptProvider | None
+
+
+def transcript_answer(providers: CallFileProviders, path: str) -> tuple[HTTPStatus, dict[str, Any]]:
+    """The status and JSON body for ``path``: ``404`` when it is not a call file route."""
+    match = _CALL_FILE_PATTERN.match(path)
+    if match is None:
         return _NOT_FOUND
-    run_id, raw_number = match.groups()
-    if not is_valid_run_id(run_id) or not _CALL_PATTERN.match(raw_number):
+    run_id, raw_number, kind = match.groups()
+    prompt = kind == "prompt"
+    provider = providers.run_prompt_provider if prompt else providers.run_transcript_provider
+    if provider is None or not is_valid_run_id(run_id) or not _CALL_PATTERN.match(raw_number):
         return _NOT_FOUND
     number = int(raw_number)
     try:
         text = provider(run_id, number)
     except Exception as exc:  # noqa: BLE001 - the type only: the message can quote run data
         _log_failure_type(run_id, exc)
-        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": "transcript unavailable"}
+        return HTTPStatus.SERVICE_UNAVAILABLE, {"error": f"{kind} unavailable"}
     if text is None:
         return _NOT_FOUND
-    return HTTPStatus.OK, {"run_id": run_id, "call": number, **sanitize_transcript(text)}
+    body = sanitize_prompt(text) if prompt else sanitize_transcript(text)
+    return HTTPStatus.OK, {"run_id": run_id, "call": number, **body}
+
+
+def sanitize_prompt(text: str) -> dict[str, Any]:
+    """One stored prompt, redacted again and capped; ``truncated`` when it was cut."""
+    capped = cap_prompt(text)
+    return {"text": capped, "truncated": PROMPT_CUT_MARKER in capped}
 
 
 def sanitize_transcript(text: str) -> dict[str, Any]:
